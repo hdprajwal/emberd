@@ -1,0 +1,24 @@
+# Build outputs
+/bin/
+/dist/
+/emberd
+/emberd-init
+
+# Rootfs artifacts (large binary blobs, built locally)
+rootfs/*.ext4
+rootfs/*.img
+rootfs/vmlinux*
+rootfs/work/
+
+# Go
+*.test
+*.out
+*.prof
+.go-cache/
+vendor/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
