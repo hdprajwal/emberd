@@ -20,6 +20,7 @@ import (
 	models "github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/sirupsen/logrus"
 
+	"github.com/hdprajwal/emberd/pkg/proto"
 	"github.com/hdprajwal/emberd/pkg/sandbox"
 )
 
@@ -64,7 +65,8 @@ func (c *Config) withDefaults() error {
 		c.KernelImagePath = filepath.Join(home, "firecracker-verify", "vmlinux-6.1.155")
 	}
 	if c.InitrdPath == "" {
-		c.InitrdPath = filepath.Join(home, "firecracker-verify", "initramfs.cpio")
+		// Built by rootfs/build.sh; boots straight into the emberd-init agent.
+		c.InitrdPath = filepath.Join(home, "firecracker-verify", "emberd-initramfs.cpio")
 	}
 	if c.RootDrivePath == "" {
 		c.RootDrivePath = filepath.Join(home, "firecracker-verify", "ubuntu-24.04.squashfs")
@@ -89,20 +91,27 @@ func (c *Config) withDefaults() error {
 
 // vm is a live microVM handle.
 type vm struct {
-	sb      *sandbox.Sandbox
-	machine *fc.Machine
-	cancel  context.CancelFunc
-	stdinW  *os.File // write end of the console pipe; held open to keep init alive
-	dir     string   // per-sandbox work dir
+	sb        *sandbox.Sandbox
+	machine   *fc.Machine
+	cancel    context.CancelFunc
+	stdinW    *os.File // write end of the console pipe; held open to keep init alive
+	dir       string   // per-sandbox work dir
+	vsockUDS  string   // host Unix socket for the guest vsock control plane
+	vsockPort uint32   // guest vsock port emberd-init listens on
 }
+
+// firstGuestCID is the lowest assignable guest context ID; 0-2 are reserved
+// (hypervisor, local, host).
+const firstGuestCID uint32 = 3
 
 // Manager boots and tears down Firecracker microVMs.
 type Manager struct {
 	cfg    Config
 	logger *logrus.Entry
 
-	mu  sync.Mutex
-	vms map[string]*vm
+	mu      sync.Mutex
+	vms     map[string]*vm
+	nextCID uint32
 }
 
 // New validates the host artifacts and returns a ready Manager.
@@ -123,9 +132,10 @@ func New(cfg Config) (*Manager, error) {
 	logger.SetLevel(logrus.WarnLevel)
 
 	return &Manager{
-		cfg:    cfg,
-		logger: logrus.NewEntry(logger),
-		vms:    make(map[string]*vm),
+		cfg:     cfg,
+		logger:  logrus.NewEntry(logger),
+		vms:     make(map[string]*vm),
+		nextCID: firstGuestCID,
 	}, nil
 }
 
@@ -161,6 +171,11 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		return nil, fmt.Errorf("create console pipe: %w", err)
 	}
 
+	// The control plane runs over a Firecracker hybrid-vsock device: the host
+	// connects through vsockUDS, the guest's emberd-init binds proto.GuestPort.
+	cid := m.allocCID()
+	vsockUDS := filepath.Join(dir, "vsock.sock")
+
 	socketPath := filepath.Join(dir, "fc.sock")
 	fcCfg := fc.Config{
 		SocketPath:      socketPath,
@@ -172,6 +187,11 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 			PathOnHost:   fc.String(m.cfg.RootDrivePath),
 			IsRootDevice: fc.Bool(true),
 			IsReadOnly:   fc.Bool(true),
+		}},
+		VsockDevices: []fc.VsockDevice{{
+			ID:   "ctrl",
+			Path: vsockUDS,
+			CID:  cid,
 		}},
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  fc.Int64(m.cfg.VcpuCount),
@@ -225,22 +245,61 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	sb := &sandbox.Sandbox{ID: id, LanguagePack: languagePack}
 
 	m.mu.Lock()
-	m.vms[id] = &vm{sb: sb, machine: machine, cancel: cancel, stdinW: stdinW, dir: dir}
+	m.vms[id] = &vm{
+		sb:        sb,
+		machine:   machine,
+		cancel:    cancel,
+		stdinW:    stdinW,
+		dir:       dir,
+		vsockUDS:  vsockUDS,
+		vsockPort: proto.GuestPort,
+	}
 	m.mu.Unlock()
 
 	return sb, nil
 }
 
-// Exec is not implemented yet. It returns sandbox.ErrExecNotImplemented until
-// the vsock control plane and emberd-init guest agent exist.
-func (m *Manager) Exec(ctx context.Context, id, code string) (stdout, stderr string, exitCode int, err error) {
+// allocCID hands out a fresh guest context ID.
+func (m *Manager) allocCID() uint32 {
 	m.mu.Lock()
-	_, ok := m.vms[id]
+	defer m.mu.Unlock()
+	cid := m.nextCID
+	m.nextCID++
+	return cid
+}
+
+// Exec dials the sandbox's emberd-init agent over vsock, sends the request, and
+// returns the result.
+func (m *Manager) Exec(ctx context.Context, id string, req proto.ExecRequest) (proto.ExecResult, error) {
+	m.mu.Lock()
+	v, ok := m.vms[id]
 	m.mu.Unlock()
 	if !ok {
-		return "", "", 0, sandbox.ErrNotFound
+		return proto.ExecResult{}, sandbox.ErrNotFound
 	}
-	return "", "", 0, sandbox.ErrExecNotImplemented
+
+	conn, err := proto.DialGuest(v.vsockUDS, v.vsockPort)
+	if err != nil {
+		return proto.ExecResult{}, fmt.Errorf("connect sandbox %s: %w", id, err)
+	}
+	defer conn.Close()
+
+	// Bound the round trip so a wedged guest can't hang the request: the guest
+	// enforces req.TimeoutMs on the code itself, so allow that plus slack.
+	wall := 60 * time.Second
+	if req.TimeoutMs > 0 {
+		wall = time.Duration(req.TimeoutMs)*time.Millisecond + 10*time.Second
+	}
+	_ = conn.SetDeadline(time.Now().Add(wall))
+
+	if err := proto.WriteMessage(conn, req); err != nil {
+		return proto.ExecResult{}, fmt.Errorf("send exec request: %w", err)
+	}
+	var res proto.ExecResult
+	if err := proto.ReadMessage(conn, &res); err != nil {
+		return proto.ExecResult{}, fmt.Errorf("read exec result: %w", err)
+	}
+	return res, nil
 }
 
 // Delete tears down the microVM and releases its resources.

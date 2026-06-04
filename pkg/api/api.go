@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/hdprajwal/emberd/pkg/proto"
 	"github.com/hdprajwal/emberd/pkg/sandbox"
 )
 
@@ -27,6 +28,7 @@ type ExecResponse struct {
 	Stderr     string `json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int    `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
 }
 
 // Server wires the HTTP surface to a sandbox.Manager.
@@ -74,13 +76,14 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stdout, stderr, exitCode, err := s.mgr.Exec(r.Context(), id, req.Code)
+	res, err := s.mgr.Exec(r.Context(), id, proto.ExecRequest{
+		Code:      req.Code,
+		Stdin:     req.Stdin,
+		TimeoutMs: req.TimeoutMs,
+	})
 	switch {
 	case errors.Is(err, sandbox.ErrNotFound):
 		writeError(w, http.StatusNotFound, "sandbox not found")
-		return
-	case errors.Is(err, sandbox.ErrExecNotImplemented):
-		writeError(w, http.StatusNotImplemented, "not implemented")
 		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -88,9 +91,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, ExecResponse{
-		Stdout:   stdout,
-		Stderr:   stderr,
-		ExitCode: exitCode,
+		Stdout:     res.Stdout,
+		Stderr:     res.Stderr,
+		ExitCode:   res.ExitCode,
+		DurationMs: res.DurationMs,
+		Error:      res.Error,
 	})
 }
 

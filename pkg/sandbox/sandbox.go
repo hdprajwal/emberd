@@ -3,14 +3,12 @@ package sandbox
 import (
 	"context"
 	"errors"
+
+	"github.com/hdprajwal/emberd/pkg/proto"
 )
 
 // ErrNotFound is returned when a sandbox ID does not refer to a live sandbox.
 var ErrNotFound = errors.New("sandbox not found")
-
-// ErrExecNotImplemented is returned by Exec until the vsock control plane and
-// the emberd-init guest agent are wired up.
-var ErrExecNotImplemented = errors.New("exec not implemented")
 
 type Sandbox struct {
 	ID           string
@@ -19,6 +17,6 @@ type Sandbox struct {
 
 type Manager interface {
 	Create(ctx context.Context, languagePack string) (*Sandbox, error)
-	Exec(ctx context.Context, id, code string) (stdout, stderr string, exitCode int, err error)
+	Exec(ctx context.Context, id string, req proto.ExecRequest) (proto.ExecResult, error)
 	Delete(ctx context.Context, id string) error
 }

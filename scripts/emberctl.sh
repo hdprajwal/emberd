@@ -119,8 +119,23 @@ cmd_test() {
   pgrep -af "id $fc" | grep -qv ' pgrep ' && ok "microVM process running" || bad "no microVM process"
   grep -q "Linux version" "$WORKDIR/$id/vm.log" 2>/dev/null && ok "guest kernel booted" || bad "no kernel boot in vm.log"
 
-  printf '%s==> exec (not implemented yet)%s\n' "$BOLD" "$RESET"
-  ac 501 "$(curl -s -o /dev/null -X POST "$BASE/sandboxes/$id/exec" -d '{"code":"print(1)"}' -w '%{http_code}')" "exec on live sandbox"
+  printf '%s==> exec%s\n' "$BOLD" "$RESET"
+  # Wait for the guest agent to come up, then run real code.
+  local execout=""
+  for _ in $(seq 1 50); do
+    execout="$(curl -s -X POST "$BASE/sandboxes/$id/exec" -d '{"code":"print(6*7)"}')"
+    case "$execout" in *'"stdout":"42'*) break ;; esac
+    sleep 0.2
+  done
+  printf '  %s%s%s\n' "$DIM" "$execout" "$RESET"
+  case "$execout" in
+    *'"stdout":"42'*) ok "exec returned stdout 42" ;;
+    *) bad "exec did not return 42 (got: $execout)" ;;
+  esac
+  case "$execout" in *'"exit_code":0'*) ok "exit_code 0" ;; *) bad "exit_code not 0" ;; esac
+  local exiterr
+  exiterr="$(curl -s -X POST "$BASE/sandboxes/$id/exec" -d '{"code":"import sys;sys.exit(7)"}')"
+  case "$exiterr" in *'"exit_code":7'*) ok "non-zero exit propagated (7)" ;; *) bad "exit code 7 not propagated (got: $exiterr)" ;; esac
   ac 404 "$(curl -s -o /dev/null -X POST "$BASE/sandboxes/sb_missing/exec" -d '{"code":"x"}' -w '%{http_code}')" "exec on unknown sandbox"
 
   printf '%s==> delete%s\n' "$BOLD" "$RESET"
