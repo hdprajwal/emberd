@@ -7,25 +7,29 @@ import (
 	"syscall"
 )
 
-// rootDevice is the block device Firecracker exposes for the rootfs drive.
-const rootDevice = "/dev/vda"
+// Mount layout used while bringing up the guest root.
+const (
+	// rootDevice is the block device Firecracker exposes for the rootfs drive.
+	rootDevice = "/dev/vda"
+	// lowerDir is the read-only language-pack squashfs (overlay lower layer).
+	lowerDir = "/lower"
+	// overlayDir holds the tmpfs that backs the overlay upper + work dirs.
+	overlayDir = "/overlay"
+	// newRoot is the merged overlay mount we switch_root into.
+	newRoot = "/newroot"
+)
 
-// newRoot is where the language-pack squashfs is mounted before we chroot in.
-const newRoot = "/newroot"
-
-// bootstrapPID1 runs the minimal init sequence when emberd-init is PID 1 inside
-// the guest: bring up enough of the initramfs to see the root block device,
-// mount the read-only language-pack squashfs, chroot into it, and re-create the
-// pseudo-filesystems plus a writable /tmp inside the new root. After this the
-// process is running with the language pack's interpreter and libraries on the
-// usual paths.
+// bootstrapPID1 runs the init sequence when emberd-init is PID 1 inside the
+// guest. It builds the writable root the architecture calls for: the language
+// pack squashfs as a read-only lower layer, a tmpfs upper for writes, an
+// overlayfs merge of the two, then a switch_root into the merged view. After
+// this the whole filesystem is writable scratch (discarded with the VM) while
+// the base image stays immutable and shareable.
 //
-// This is the cold-boot rootfs path; the tmpfs overlay and a proper switch_root
-// are refinements left for later. A read-only squashfs root with tmpfs on /tmp
-// is enough to run code: the interpreter and its libs come from the immutable
-// base, scratch files go to /tmp.
+// pivot_root(2) is rejected on an initramfs, so the switch uses the busybox
+// switch_root technique: move the merged root onto / with MS_MOVE, then chroot.
 func bootstrapPID1() error {
-	// In the initramfs, mount the kernel filesystems we need. /dev (devtmpfs)
+	// In the initramfs, mount the kernel filesystems we need. devtmpfs on /dev
 	// is what makes /dev/vda appear so we can mount the real root.
 	if err := mount("proc", "/proc", "proc", 0, ""); err != nil {
 		log.Printf("mount /proc (initramfs): %v", err)
@@ -33,34 +37,57 @@ func bootstrapPID1() error {
 	if err := mount("dev", "/dev", "devtmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount /dev (initramfs): %w", err)
 	}
-
-	if err := os.MkdirAll(newRoot, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", newRoot, err)
-	}
-	if err := mount(rootDevice, newRoot, "squashfs", syscall.MS_RDONLY, ""); err != nil {
-		return fmt.Errorf("mount rootfs %s -> %s: %w", rootDevice, newRoot, err)
+	if err := mount("sys", "/sys", "sysfs", 0, ""); err != nil {
+		log.Printf("mount /sys (initramfs): %v", err)
 	}
 
-	if err := syscall.Chroot(newRoot); err != nil {
-		return fmt.Errorf("chroot %s: %w", newRoot, err)
+	// Lower layer: the immutable language-pack squashfs.
+	if err := mount(rootDevice, lowerDir, "squashfs", syscall.MS_RDONLY, ""); err != nil {
+		return fmt.Errorf("mount rootfs %s -> %s: %w", rootDevice, lowerDir, err)
+	}
+
+	// Upper + work dirs live on a fresh tmpfs (must share one filesystem).
+	if err := mount("tmpfs", overlayDir, "tmpfs", 0, ""); err != nil {
+		return fmt.Errorf("mount overlay tmpfs: %w", err)
+	}
+	upper := overlayDir + "/upper"
+	work := overlayDir + "/work"
+	for _, d := range []string{upper, work, newRoot} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+
+	// Merge lower (ro) + upper (rw) into the new root.
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerDir, upper, work)
+	if err := syscall.Mount("overlay", newRoot, "overlay", 0, opts); err != nil {
+		return fmt.Errorf("mount overlay (%s): %w", opts, err)
+	}
+
+	// Carry the pseudo-filesystems into the new root before switching. MS_MOVE
+	// relocates each mount (and its subtree) so we don't lose /dev etc.
+	for _, d := range []string{"/proc", "/dev", "/sys"} {
+		target := newRoot + d
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", target, err)
+		}
+		if err := syscall.Mount(d, target, "", syscall.MS_MOVE, ""); err != nil {
+			return fmt.Errorf("move %s -> %s: %w", d, target, err)
+		}
+	}
+
+	// switch_root: make newRoot the real root, then chroot into it.
+	if err := syscall.Chdir(newRoot); err != nil {
+		return fmt.Errorf("chdir %s: %w", newRoot, err)
+	}
+	if err := syscall.Mount(".", "/", "", syscall.MS_MOVE, ""); err != nil {
+		return fmt.Errorf("move new root onto /: %w", err)
+	}
+	if err := syscall.Chroot("."); err != nil {
+		return fmt.Errorf("chroot: %w", err)
 	}
 	if err := syscall.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
-	}
-
-	// Re-create the pseudo-filesystems inside the new root, plus a writable
-	// tmpfs for scratch (the squashfs root is read-only).
-	if err := mount("proc", "/proc", "proc", 0, ""); err != nil {
-		log.Printf("mount /proc (rootfs): %v", err)
-	}
-	if err := mount("dev", "/dev", "devtmpfs", 0, ""); err != nil {
-		log.Printf("mount /dev (rootfs): %v", err)
-	}
-	if err := mount("sys", "/sys", "sysfs", 0, ""); err != nil {
-		log.Printf("mount /sys (rootfs): %v", err)
-	}
-	if err := mount("tmpfs", "/tmp", "tmpfs", 0, ""); err != nil {
-		return fmt.Errorf("mount /tmp: %w", err)
 	}
 
 	// PID 1 starts with no environment; give interpreters a usable PATH (and a
