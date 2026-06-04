@@ -11,14 +11,20 @@ import (
 	"time"
 
 	"github.com/hdprajwal/emberd/pkg/api"
+	"github.com/hdprajwal/emberd/pkg/sandbox/firecracker"
 )
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7777", "HTTP listen address")
 	flag.Parse()
 
+	mgr, err := firecracker.New(firecracker.Config{})
+	if err != nil {
+		log.Fatalf("init sandbox manager: %v", err)
+	}
+
 	mux := http.NewServeMux()
-	api.Register(mux)
+	api.NewServer(mgr).Register(mux)
 
 	srv := &http.Server{
 		Addr:              *addr,
