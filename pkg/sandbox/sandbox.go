@@ -10,6 +10,10 @@ import (
 // ErrNotFound is returned when a sandbox ID does not refer to a live sandbox.
 var ErrNotFound = errors.New("sandbox not found")
 
+// ErrUnknownPack is returned by Create when the requested language pack is not
+// registered.
+var ErrUnknownPack = errors.New("unknown language pack")
+
 type Sandbox struct {
 	ID           string
 	LanguagePack string

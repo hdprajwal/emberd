@@ -26,14 +26,20 @@ func main() {
 
 	// When launched as PID 1 inside the guest, set up the rootfs before serving.
 	// Run on the host (tests, manual runs) skips this.
+	interp := *interpreter
 	if os.Getpid() == 1 {
 		if err := bootstrapPID1(); err != nil {
 			log.Fatalf("guest bootstrap: %v", err)
 		}
+		// The language pack's interpreter is passed by the host on the kernel
+		// command line; fall back to the flag default if absent.
+		if v := kernelParam("emberd.interpreter"); v != "" {
+			interp = v
+		}
 	}
 
 	handle := func(req proto.ExecRequest) proto.ExecResult {
-		return runExec(context.Background(), *interpreter, req)
+		return runExec(context.Background(), interp, req)
 	}
 	if err := serveVsock(uint32(*port), handle); err != nil {
 		log.Fatalf("vsock server: %v", err)

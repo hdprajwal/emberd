@@ -106,6 +106,7 @@ cmd_test() {
   ac()  { [ "$2" = "$1" ] && ok "$3 -> HTTP $2" || bad "$3 -> HTTP $2 (expected $1)"; }
 
   printf '%s==> create%s\n' "$BOLD" "$RESET"
+  ac 400 "$(curl -s -o /dev/null -X POST "$BASE/sandboxes" -d '{"language_pack":"nope"}' -w '%{http_code}')" "create with unknown pack"
   local resp body code id fc
   resp="$(curl -s -X POST "$BASE/sandboxes" -d '{"language_pack":"python"}' -w '\n%{http_code}')"
   body="$(printf '%s' "$resp" | sed '$d')"; code="$(printf '%s' "$resp" | tail -1)"

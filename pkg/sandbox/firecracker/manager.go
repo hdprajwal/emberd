@@ -24,6 +24,16 @@ import (
 	"github.com/hdprajwal/emberd/pkg/sandbox"
 )
 
+// Pack is a language pack: the rootfs squashfs a sandbox boots and the
+// interpreter emberd-init runs submitted code under inside it.
+type Pack struct {
+	// RootfsPath is the read-only squashfs mounted as the overlay lower layer.
+	RootfsPath string
+	// Interpreter is the guest-side executable that runs submitted code (e.g.
+	// "python3", "/bin/sh"). Passed to emberd-init via the kernel command line.
+	Interpreter string
+}
+
 // Config describes the host artifacts and per-sandbox machine shape. Zero
 // values fall back to the verified development defaults under ~/firecracker.
 type Config struct {
@@ -31,13 +41,18 @@ type Config struct {
 	// resolved from PATH, then ~/.local/bin/firecracker.
 	FirecrackerBin string
 
-	// KernelImagePath, InitrdPath, and RootDrivePath point at the boot
-	// artifacts. The rootfs is mounted read-only.
+	// KernelImagePath and InitrdPath point at the boot artifacts shared by all
+	// packs.
 	KernelImagePath string
 	InitrdPath      string
-	RootDrivePath   string
 
-	// KernelArgs is the guest kernel command line.
+	// Packs maps a language-pack name to its rootfs + interpreter. If empty,
+	// defaults to "python" (python3) and "shell" (/bin/sh), both over the
+	// verification rootfs.
+	Packs map[string]Pack
+
+	// KernelArgs is the base guest kernel command line; per-sandbox boot adds
+	// the selected pack's interpreter.
 	KernelArgs string
 
 	// VcpuCount and MemSizeMib size each microVM.
@@ -68,13 +83,17 @@ func (c *Config) withDefaults() error {
 		// Built by rootfs/build.sh; boots straight into the emberd-init agent.
 		c.InitrdPath = filepath.Join(home, "firecracker-verify", "emberd-initramfs.cpio")
 	}
-	if c.RootDrivePath == "" {
-		c.RootDrivePath = filepath.Join(home, "firecracker-verify", "ubuntu-24.04.squashfs")
+	if len(c.Packs) == 0 {
+		// Both packs share the verification rootfs for now; only the interpreter
+		// differs. A purpose-built minimal squashfs per language slots in here
+		// later without touching the rest of the manager.
+		rootfs := filepath.Join(home, "firecracker-verify", "ubuntu-24.04.squashfs")
+		c.Packs = map[string]Pack{
+			"python": {RootfsPath: rootfs, Interpreter: "python3"},
+			"shell":  {RootfsPath: rootfs, Interpreter: "/bin/sh"},
+		}
 	}
 	if c.KernelArgs == "" {
-		// Matches the verified host-boot config. The guest serial console is
-		// fed from a pipe we hold open (see Create), so init blocks on the
-		// shell prompt rather than hitting EOF and panicking.
 		c.KernelArgs = "console=ttyS0 reboot=k panic=1 pci=off"
 	}
 	if c.VcpuCount == 0 {
@@ -119,7 +138,15 @@ func New(cfg Config) (*Manager, error) {
 	if err := cfg.withDefaults(); err != nil {
 		return nil, err
 	}
-	for _, p := range []string{cfg.FirecrackerBin, cfg.KernelImagePath, cfg.InitrdPath, cfg.RootDrivePath} {
+	artifacts := []string{cfg.FirecrackerBin, cfg.KernelImagePath, cfg.InitrdPath}
+	seen := map[string]bool{}
+	for _, p := range cfg.Packs {
+		if !seen[p.RootfsPath] {
+			seen[p.RootfsPath] = true
+			artifacts = append(artifacts, p.RootfsPath)
+		}
+	}
+	for _, p := range artifacts {
 		if _, err := os.Stat(p); err != nil {
 			return nil, fmt.Errorf("required artifact missing: %s: %w", p, err)
 		}
@@ -139,10 +166,14 @@ func New(cfg Config) (*Manager, error) {
 	}, nil
 }
 
-// Create boots a fresh microVM and returns its sandbox handle. languagePack is
-// accepted for forward compatibility but ignored until the language-pack
-// abstraction lands; every sandbox boots the same verified rootfs for now.
+// Create boots a fresh microVM running the named language pack and returns its
+// sandbox handle. An unknown pack name returns sandbox.ErrUnknownPack.
 func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.Sandbox, error) {
+	pack, ok := m.cfg.Packs[languagePack]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", sandbox.ErrUnknownPack, languagePack)
+	}
+
 	id, err := newID()
 	if err != nil {
 		return nil, err
@@ -176,15 +207,19 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	cid := m.allocCID()
 	vsockUDS := filepath.Join(dir, "vsock.sock")
 
+	// The selected pack picks the rootfs and the guest interpreter; emberd-init
+	// reads emberd.interpreter from /proc/cmdline.
+	kernelArgs := m.cfg.KernelArgs + " emberd.interpreter=" + pack.Interpreter
+
 	socketPath := filepath.Join(dir, "fc.sock")
 	fcCfg := fc.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: m.cfg.KernelImagePath,
 		InitrdPath:      m.cfg.InitrdPath,
-		KernelArgs:      m.cfg.KernelArgs,
+		KernelArgs:      kernelArgs,
 		Drives: []models.Drive{{
 			DriveID:      fc.String("rootfs"),
-			PathOnHost:   fc.String(m.cfg.RootDrivePath),
+			PathOnHost:   fc.String(pack.RootfsPath),
 			IsRootDevice: fc.Bool(true),
 			IsReadOnly:   fc.Bool(true),
 		}},

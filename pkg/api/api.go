@@ -60,7 +60,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sb, err := s.mgr.Create(r.Context(), req.LanguagePack)
-	if err != nil {
+	switch {
+	case errors.Is(err, sandbox.ErrUnknownPack):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

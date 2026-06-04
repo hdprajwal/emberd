@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -95,6 +96,22 @@ func bootstrapPID1() error {
 	os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	os.Setenv("HOME", "/root")
 	return nil
+}
+
+// kernelParam returns the value of a key=value token on the kernel command
+// line (/proc/cmdline), or "" if absent. /proc must already be mounted.
+func kernelParam(key string) string {
+	b, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, tok := range strings.Fields(string(b)) {
+		if v, ok := strings.CutPrefix(tok, prefix); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func mount(source, target, fstype string, flags uintptr, data string) error {
