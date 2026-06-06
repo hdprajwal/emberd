@@ -1,7 +1,7 @@
 // Package firecracker provides a Firecracker-backed implementation of
-// sandbox.Manager. It boots one microVM per sandbox over the cold-boot path:
-// kernel + initramfs + a read-only rootfs drive. Exec is not wired yet; that
-// arrives with the vsock control plane in a later milestone.
+// sandbox.Manager. It boots one microVM per sandbox over the cold-boot path
+// (kernel + initramfs + a read-only rootfs drive), runs submitted code in the
+// guest over a vsock control plane, and tears the VM down on delete.
 package firecracker
 
 import (
@@ -62,6 +62,11 @@ type Config struct {
 	// WorkDir holds per-sandbox runtime state (API sockets, VM logs). If
 	// empty, defaults to a temp directory under the OS temp dir.
 	WorkDir string
+
+	// BootTimeout bounds how long Create waits for the guest agent to come up
+	// and start accepting on the vsock control plane before giving up and
+	// tearing the microVM down. If zero, defaults to 15s.
+	BootTimeout time.Duration
 }
 
 func (c *Config) withDefaults() error {
@@ -105,6 +110,9 @@ func (c *Config) withDefaults() error {
 	if c.WorkDir == "" {
 		c.WorkDir = filepath.Join(os.TempDir(), "emberd")
 	}
+	if c.BootTimeout == 0 {
+		c.BootTimeout = 15 * time.Second
+	}
 	return nil
 }
 
@@ -113,10 +121,9 @@ type vm struct {
 	sb        *sandbox.Sandbox
 	machine   *fc.Machine
 	cancel    context.CancelFunc
-	stdinW    *os.File // write end of the console pipe; held open to keep init alive
-	dir       string   // per-sandbox work dir
-	vsockUDS  string   // host Unix socket for the guest vsock control plane
-	vsockPort uint32   // guest vsock port emberd-init listens on
+	dir       string // per-sandbox work dir
+	vsockUDS  string // host Unix socket for the guest vsock control plane
+	vsockPort uint32 // guest vsock port emberd-init listens on
 }
 
 // firstGuestCID is the lowest assignable guest context ID; 0-2 are reserved
@@ -192,16 +199,6 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		return nil, fmt.Errorf("create vm log: %w", err)
 	}
 
-	// A pipe whose write end we keep open feeds the guest serial console.
-	// Firecracker reads from the read end; with no EOF, the guest shell blocks
-	// instead of exiting, so the microVM stays alive until we tear it down.
-	stdinR, stdinW, err := os.Pipe()
-	if err != nil {
-		logFile.Close()
-		cleanup()
-		return nil, fmt.Errorf("create console pipe: %w", err)
-	}
-
 	// The control plane runs over a Firecracker hybrid-vsock device: the host
 	// connects through vsockUDS, the guest's emberd-init binds proto.GuestPort.
 	cid := m.allocCID()
@@ -244,11 +241,13 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	fcID := strings.ReplaceAll(id, "_", "-")
 	fcCfg.VMID = fcID
 
+	// No stdin is wired: the guest serial console input goes to /dev/null. The
+	// microVM stays alive because PID 1 (emberd-init) runs forever in its vsock
+	// accept loop, not because a console pipe is held open.
 	cmd := fc.VMCommandBuilder{}.
 		WithBin(m.cfg.FirecrackerBin).
 		WithSocketPath(socketPath).
 		WithArgs([]string{"--id", fcID}).
-		WithStdin(stdinR).
 		WithStdout(logFile).
 		WithStderr(logFile).
 		Build(vmCtx)
@@ -259,8 +258,6 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	)
 	if err != nil {
 		cancel()
-		stdinR.Close()
-		stdinW.Close()
 		logFile.Close()
 		cleanup()
 		return nil, fmt.Errorf("new machine: %w", err)
@@ -268,14 +265,24 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 
 	if err := machine.Start(vmCtx); err != nil {
 		cancel()
-		stdinR.Close()
-		stdinW.Close()
 		logFile.Close()
 		cleanup()
 		return nil, fmt.Errorf("start machine: %w", err)
 	}
-	// Firecracker dup'd the read end into its own process; we no longer need it.
-	stdinR.Close()
+
+	// Block until the guest's emberd-init is past bootstrap and accepting on the
+	// vsock control plane. Without this, an exec issued right after create races
+	// the guest boot; with it, a returned sandbox is immediately usable.
+	if err := waitReady(ctx, vsockUDS, proto.GuestPort, m.cfg.BootTimeout); err != nil {
+		_ = machine.StopVMM()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = machine.Wait(stopCtx)
+		stopCancel()
+		cancel()
+		logFile.Close()
+		cleanup()
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
+	}
 
 	sb := &sandbox.Sandbox{ID: id, LanguagePack: languagePack}
 
@@ -284,7 +291,6 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		sb:        sb,
 		machine:   machine,
 		cancel:    cancel,
-		stdinW:    stdinW,
 		dir:       dir,
 		vsockUDS:  vsockUDS,
 		vsockPort: proto.GuestPort,
@@ -301,6 +307,34 @@ func (m *Manager) allocCID() uint32 {
 	cid := m.nextCID
 	m.nextCID++
 	return cid
+}
+
+// waitReady polls the guest vsock control plane until it accepts a connection
+// or timeout/ctx fires. A successful Firecracker hybrid-vsock handshake means
+// emberd-init has finished bootstrap and is listening, so it is a precise
+// readiness signal — no fixed sleep, no exec/boot race. Probes fail fast while
+// the guest is still booting (Firecracker resets the connection when no guest
+// port is listening), so the loop converges within a few interval ticks.
+func waitReady(ctx context.Context, udsPath string, port uint32, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	const interval = 50 * time.Millisecond
+	var lastErr error
+	for {
+		conn, err := proto.DialGuest(udsPath, port)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		lastErr = err
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("guest control plane not ready after %s: %w", timeout, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 // Exec dials the sandbox's emberd-init agent over vsock, sends the request, and
@@ -359,7 +393,6 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	waitCancel()
 
 	v.cancel()
-	v.stdinW.Close()
 	_ = os.RemoveAll(v.dir)
 
 	if stopErr != nil {

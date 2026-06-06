@@ -9,7 +9,7 @@ import (
 )
 
 func TestRunExecSuccess(t *testing.T) {
-	res := runExec(context.Background(), "python3", proto.ExecRequest{
+	res := runExec(context.Background(), nil, "python3", proto.ExecRequest{
 		Code: "print('hello world')",
 	})
 	if res.Error != "" {
@@ -24,7 +24,7 @@ func TestRunExecSuccess(t *testing.T) {
 }
 
 func TestRunExecStdin(t *testing.T) {
-	res := runExec(context.Background(), "python3", proto.ExecRequest{
+	res := runExec(context.Background(), nil, "python3", proto.ExecRequest{
 		Code:  "import sys; sys.stdout.write(sys.stdin.read().upper())",
 		Stdin: "abc",
 	})
@@ -34,7 +34,7 @@ func TestRunExecStdin(t *testing.T) {
 }
 
 func TestRunExecNonZeroExit(t *testing.T) {
-	res := runExec(context.Background(), "python3", proto.ExecRequest{
+	res := runExec(context.Background(), nil, "python3", proto.ExecRequest{
 		Code: "import sys; sys.stderr.write('boom'); sys.exit(3)",
 	})
 	if res.Error != "" {
@@ -49,7 +49,7 @@ func TestRunExecNonZeroExit(t *testing.T) {
 }
 
 func TestRunExecTimeout(t *testing.T) {
-	res := runExec(context.Background(), "python3", proto.ExecRequest{
+	res := runExec(context.Background(), nil, "python3", proto.ExecRequest{
 		Code:      "import time; time.sleep(5)",
 		TimeoutMs: 200,
 	})

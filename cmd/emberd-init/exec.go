@@ -16,7 +16,12 @@ import (
 // and captures the result. A non-zero exit from the user's program is a normal
 // result (ExitCode set, Error empty); only a failure to run the program at all
 // populates Error.
-func runExec(ctx context.Context, interpreter string, req proto.ExecRequest) proto.ExecResult {
+//
+// reaper is the PID 1 child reaper, or nil when emberd-init runs off the guest
+// (host tests, manual runs). When set, the interpreter child is reaped by the
+// reaper rather than by os/exec, so a double-forked grandchild can't be mistaken
+// for it; when nil, the ordinary os/exec path is used.
+func runExec(ctx context.Context, reaper *childReaper, interpreter string, req proto.ExecRequest) proto.ExecResult {
 	start := time.Now()
 
 	if req.TimeoutMs > 0 {
@@ -44,7 +49,7 @@ func runExec(ctx context.Context, interpreter string, req proto.ExecRequest) pro
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	runErr := cmd.Run()
+	exitCode, launchErr := launchAndWait(ctx, reaper, cmd)
 	res := proto.ExecResult{
 		Stdout:     stdout.String(),
 		Stderr:     stderr.String(),
@@ -52,21 +57,36 @@ func runExec(ctx context.Context, interpreter string, req proto.ExecRequest) pro
 	}
 
 	switch {
-	case runErr == nil:
-		res.ExitCode = 0
 	case ctx.Err() == context.DeadlineExceeded:
 		res.ExitCode = -1
 		res.Error = "execution timed out"
+	case launchErr != nil:
+		res.ExitCode = -1
+		res.Error = launchErr.Error()
 	default:
-		var ee *exec.ExitError
-		if errors.As(runErr, &ee) {
-			res.ExitCode = ee.ExitCode()
-		} else {
-			res.ExitCode = -1
-			res.Error = runErr.Error()
-		}
+		res.ExitCode = exitCode
 	}
 	return res
+}
+
+// launchAndWait runs cmd to completion and returns the program's exit code.
+// launchErr is non-nil only when the program could not be started at all; a
+// non-zero or signaled exit is a normal result, not an error. The reaper path
+// and the plain os/exec path resolve these identically (a signaled exit is exit
+// code -1, exactly what exec.ExitError.ExitCode reports).
+func launchAndWait(ctx context.Context, reaper *childReaper, cmd *exec.Cmd) (exitCode int, launchErr error) {
+	if reaper != nil {
+		return reaper.run(ctx, cmd)
+	}
+	err := cmd.Run()
+	if err == nil {
+		return 0, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), nil
+	}
+	return -1, err
 }
 
 func elapsed(start time.Time) int {

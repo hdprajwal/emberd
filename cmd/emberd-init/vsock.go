@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -52,7 +53,12 @@ func serveConn(fd int, handle execHandler) {
 
 	var req proto.ExecRequest
 	if err := proto.ReadMessage(conn, &req); err != nil {
-		log.Printf("read exec request: %v", err)
+		// A clean close before any bytes is a host readiness probe (the daemon
+		// dials, completes the handshake, and hangs up to confirm we're up), not
+		// an error worth logging.
+		if !errors.Is(err, io.EOF) {
+			log.Printf("read exec request: %v", err)
+		}
 		return
 	}
 	res := handle(req)
