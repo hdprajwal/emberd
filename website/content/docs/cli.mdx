@@ -1,0 +1,104 @@
+---
+title: CLI & Scripts
+description: serve.sh to run the daemon and emberctl.sh to drive it — commands, the test harness, and environment.
+---
+
+Two scripts in `scripts/` make local development and testing one-liners.
+
+## `serve.sh` — build and run the daemon
+
+Builds `bin/emberd` and `bin/emberd-init`, then runs the daemon in the foreground.
+
+```bash
+./scripts/serve.sh
+# or pick an address:
+ADDR=127.0.0.1:7788 ./scripts/serve.sh
+```
+
+It rebuilds every time, which avoids the classic "I changed the manager but ran a
+stale `bin/emberd`" trap. Ctrl-C stops it.
+
+<Callout type="info">
+  `serve.sh` does **not** rebuild the guest initramfs — if you change
+  `cmd/emberd-init`, re-run `./rootfs/build.sh` too, since the agent runs from the
+  packed initramfs, not from `bin/emberd-init`.
+</Callout>
+
+## `emberctl.sh` — drive a running daemon
+
+A thin curl wrapper. Honors `ADDR` (default `127.0.0.1:7777`).
+
+```bash
+./scripts/emberctl.sh <command> [args]
+```
+
+| Command | Description |
+| --- | --- |
+| `create [pack]` | Create a sandbox (default pack `python`). Prints the `sb_…` id. |
+| `exec <id> <code…>` | Run code inside a sandbox. |
+| `inspect <id>` | Show the microVM process and the first line of its boot log. |
+| `rm <id>` | Destroy a sandbox. |
+| `ls` | List running emberd microVM processes. |
+| `ping` | Check the daemon is reachable. |
+| `test` | Full create → inspect → exec → delete cycle with assertions. |
+
+```bash
+ID=$(./scripts/emberctl.sh create python)
+./scripts/emberctl.sh exec "$ID" "print(6*7)"
+./scripts/emberctl.sh inspect "$ID"
+./scripts/emberctl.sh rm "$ID"
+```
+
+If the daemon isn't reachable, every command fails fast with a message telling you
+to start it with `serve.sh`.
+
+## The `test` harness
+
+`emberctl.sh test` runs the full lifecycle against a live daemon and asserts each
+step — useful as a smoke test after changes:
+
+```
+==> create
+  PASS create with unknown pack -> HTTP 400
+  PASS create -> HTTP 201
+  PASS got id sb_…
+==> inspect
+  PASS microVM process running
+  PASS guest kernel booted
+==> exec
+  PASS exec returned stdout 42
+  PASS exit_code 0
+  PASS non-zero exit propagated (7)
+  PASS exec on unknown sandbox -> HTTP 404
+==> delete
+  PASS delete -> HTTP 204
+  PASS microVM process gone
+  PASS work dir cleaned
+  PASS delete again -> HTTP 404
+```
+
+It waits for the guest agent to come up before asserting exec (handling the
+[create→exec race](/docs/api-reference)).
+
+## Typical workflow
+
+```bash
+# terminal 1
+./scripts/serve.sh
+
+# terminal 2
+./scripts/emberctl.sh test
+./scripts/emberctl.sh create shell      # try the shell pack
+```
+
+## Inspecting a running sandbox by hand
+
+```bash
+ID=sb_a1b2c3d4e5f6
+pgrep -af "id ${ID//_/-}"                       # the firecracker process
+cat ${TMPDIR:-/tmp}/emberd/$ID/vm.log           # guest console + VMM log
+ls ${TMPDIR:-/tmp}/emberd/$ID/                  # fc.sock, vsock.sock, vm.log
+```
+
+Note the firecracker instance id uses hyphens (`sb-…`), while the API/work-dir id
+uses the underscore form (`sb_…`).

@@ -1,0 +1,171 @@
+---
+title: Getting Started
+description: Install the prerequisites, build emberd and the guest initramfs, and run your first sandbox.
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+This walks you from a bare Linux host to a running sandbox you can execute code
+in. It assumes `x86_64`; adjust the artifact names for other architectures.
+
+## Prerequisites
+
+- **Linux** with KVM enabled and accessible (`/dev/kvm`).
+- **Go 1.26+** to build the daemon and guest agent.
+- **Firecracker 1.15.x** on your `PATH` (or at `~/.local/bin/firecracker`).
+- `cpio` and `gzip` (to build the guest initramfs). `curl` for fetching artifacts.
+
+<Callout type="warn">
+  emberd is Linux + KVM only. There is no macOS/Windows path — Firecracker needs
+  KVM. WSL2 may work if it exposes `/dev/kvm`, but it's untested.
+</Callout>
+
+## Install
+
+<Steps>
+
+<Step>
+
+### Verify KVM
+
+```bash
+ls -la /dev/kvm
+```
+
+You need read **and** write access. If it's `crw-rw----` and you're not in the
+`kvm` group:
+
+```bash
+sudo usermod -aG kvm $USER   # then log out and back in
+```
+
+</Step>
+
+<Step>
+
+### Install Firecracker
+
+```bash
+arch=$(uname -m)
+FCVER=$(curl -fsSL https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest \
+  | grep tag_name | cut -d'"' -f4)
+mkdir -p ~/firecracker && cd ~/firecracker
+curl -fsSL -o fc.tgz \
+  "https://github.com/firecracker-microvm/firecracker/releases/download/${FCVER}/firecracker-${FCVER}-${arch}.tgz"
+tar -xzf fc.tgz
+mkdir -p ~/.local/bin
+cp release-${FCVER}-${arch}/firecracker-${FCVER}-${arch} ~/.local/bin/firecracker
+chmod +x ~/.local/bin/firecracker
+firecracker --version
+```
+
+Make sure `~/.local/bin` is on your `PATH`.
+
+</Step>
+
+<Step>
+
+### Download the kernel and rootfs
+
+emberd's defaults expect these under `~/firecracker-verify/`. The kernel and the
+Ubuntu squashfs come from the Firecracker CI bucket; the squashfs ships
+`python3` and `/bin/sh`, which is what the default language packs use.
+
+```bash
+mkdir -p ~/firecracker-verify && cd ~/firecracker-verify
+base="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64"
+curl -fsSL -o vmlinux-6.1.155     "$base/vmlinux-6.1.155"
+curl -fsSL -o ubuntu-24.04.squashfs "$base/ubuntu-24.04.squashfs"
+```
+
+<Callout type="info">
+  You do **not** need the CI `initramfs.cpio` for running emberd — it boots its
+  own initramfs (next step). The CI one is only useful for the host-boot smoke
+  test in [Development](/docs/development).
+</Callout>
+
+</Step>
+
+<Step>
+
+### Build the binaries and the guest initramfs
+
+From the repo root:
+
+```bash
+go build -o bin/emberd ./cmd/emberd
+go build -o bin/emberd-init ./cmd/emberd-init
+
+# Packs a static emberd-init into a cpio initramfs at
+# ~/firecracker-verify/emberd-initramfs.cpio
+./rootfs/build.sh
+```
+
+`rootfs/build.sh` compiles `emberd-init` with `CGO_ENABLED=0` (so it needs no
+libc inside the initramfs) and packs it as `/init`. See
+[The guest rootfs](/docs/concepts/guest-rootfs) for what that binary does at boot.
+
+</Step>
+
+<Step>
+
+### Run the daemon
+
+```bash
+./bin/emberd                      # listens on 127.0.0.1:7777
+./bin/emberd --addr 127.0.0.1:8888 # or pick another address
+```
+
+On startup the daemon stats the firecracker binary, kernel, initramfs, and every
+language pack's rootfs, and **exits with a clear error if any are missing** — a
+sandbox runtime that can't boot sandboxes has no useful degraded mode.
+
+</Step>
+
+</Steps>
+
+## Run your first sandbox
+
+With the daemon running, from another terminal:
+
+```bash
+# 1. Create a sandbox — this boots a real microVM.
+ID=$(curl -s -X POST localhost:7777/sandboxes -d '{"language_pack":"python"}' \
+  | grep -o 'sb_[a-f0-9]*')
+echo "$ID"
+
+# 2. Run code inside it. (The guest takes ~1s to boot; clients should retry.)
+curl -s -X POST localhost:7777/sandboxes/$ID/exec -d '{"code":"print(6*7)"}'
+# → {"stdout":"42\n","stderr":"","exit_code":0,"duration_ms":13}
+
+# 3. Destroy it.
+curl -s -X DELETE localhost:7777/sandboxes/$ID
+```
+
+Or use the helper scripts, which wrap all of this:
+
+```bash
+./scripts/serve.sh                       # terminal 1: build + run the daemon
+./scripts/emberctl.sh test               # terminal 2: full lifecycle, asserted
+./scripts/emberctl.sh exec <id> "print('hi')"
+```
+
+See [CLI & scripts](/docs/cli) for the full `emberctl` surface.
+
+<Callout type="warn">
+  **Race after create:** `exec` immediately after `create` can fail for ~1s while
+  the guest boots and binds its vsock port. Clients should retry; `emberctl` and
+  the bundled scripts already do.
+</Callout>
+
+## Troubleshooting
+
+- **`required artifact missing: ...`** — a path the daemon expects doesn't exist.
+  Re-check the download/build steps; override paths via `firecracker.Config` if
+  you put them elsewhere.
+- **`permission denied` on `/dev/kvm`** — you're not in the `kvm` group (or
+  haven't re-logged in).
+- **exec returns `"executable file not found"`** — the pack's interpreter isn't
+  present in that rootfs. The default packs assume the Ubuntu squashfs.
+- **VM seems to boot but exec hangs/times out** — inspect the guest console log
+  at `${TMPDIR:-/tmp}/emberd/<id>/vm.log`.

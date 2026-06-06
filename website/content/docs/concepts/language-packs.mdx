@@ -1,0 +1,81 @@
+---
+title: Language Packs
+description: How language_pack selects a rootfs and interpreter, and how the interpreter reaches the guest.
+---
+
+A **language pack** is the pair of things a sandbox needs to run code: a rootfs
+(the squashfs that becomes the overlay lower layer) and an interpreter (the
+executable inside it that runs submitted code).
+
+```go
+type Pack struct {
+	RootfsPath  string // read-only squashfs, the overlay lower layer
+	Interpreter string // e.g. "python3", "/bin/sh"
+}
+```
+
+The Firecracker manager holds a registry, `map[string]Pack`, configured on
+`firecracker.Config.Packs`. `Create` looks the requested `language_pack` up there.
+
+## The default registry
+
+```go
+Packs: map[string]Pack{
+	"python": {RootfsPath: ".../ubuntu-24.04.squashfs", Interpreter: "python3"},
+	"shell":  {RootfsPath: ".../ubuntu-24.04.squashfs", Interpreter: "/bin/sh"},
+}
+```
+
+Both default packs currently **share the verification Ubuntu squashfs** — only the
+interpreter differs. That's enough to prove the abstraction end to end:
+
+```bash
+emberctl exec <python-id> "print(6*7)"        # → 42
+emberctl exec <shell-id>  "echo hello"          # → hello
+```
+
+An unregistered name is rejected before any VM boots:
+
+```bash
+curl -X POST localhost:7777/sandboxes -d '{"language_pack":"ruby"}'
+# → 400 {"error":"unknown language pack: \"ruby\""}
+```
+
+(`Create` returns `sandbox.ErrUnknownPack`, which the API maps to HTTP 400.)
+
+## How the interpreter reaches the guest
+
+The host is the source of truth for which interpreter a pack uses, so the manager
+passes it to the guest on the **kernel command line**:
+
+```
+console=ttyS0 reboot=k panic=1 pci=off emberd.interpreter=python3
+```
+
+Inside the guest, after mounting `/proc`, `emberd-init` reads
+`emberd.interpreter=` from `/proc/cmdline` and uses it as the interpreter; if it's
+absent it falls back to the `-interpreter` flag default (`python3`).
+
+This was chosen over two alternatives:
+
+- **Baking the interpreter into the image** — would couple one rootfs to one
+  interpreter, but right now both packs reuse one rootfs.
+- **Passing the interpreter per exec request** — it's a property of the pack, not
+  of an individual call.
+
+## Adding a real, purpose-built pack
+
+The abstraction is done; what's left is producing leaner rootfs images. To add a
+genuine minimal Python pack:
+
+1. Build a small squashfs (e.g. Alpine + Python 3) with `mksquashfs`.
+2. Point that pack's `RootfsPath` at it in `Config.Packs`.
+3. The daemon stats every pack's rootfs at startup, so a missing image fails fast.
+
+<Callout type="warn">
+  Building a real pack image needs `mksquashfs` (the `squashfs-tools` package),
+  which isn't present on the reference dev host — so purpose-built per-language
+  images are a [roadmap](/docs/roadmap) item. The selection logic and
+  interpreter-threading are complete and exercised today via the two-interpreter,
+  one-rootfs setup above.
+</Callout>

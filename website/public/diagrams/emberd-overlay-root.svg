@@ -1,0 +1,55 @@
+<svg viewBox="0 0 1040 440" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, sans-serif">
+  <rect x="1" y="1" width="1038" height="438" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" />
+
+  <defs>
+    <marker id="ol-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f172a" />
+    </marker>
+    <marker id="ol-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
+    </marker>
+  </defs>
+
+  <text x="40" y="52" font-size="30" font-weight="600" fill="#0f172a">The guest root is an overlay</text>
+  <text x="40" y="82" font-size="16" fill="#94a3b8">An immutable squashfs plus a per-VM tmpfs, merged and entered via switch_root.</text>
+
+  <!-- lower: squashfs -->
+  <g>
+    <rect x="60" y="140" width="320" height="88" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2" />
+    <text x="80" y="172" font-size="16" font-weight="600" fill="#0f172a">/dev/vda — squashfs</text>
+    <text x="80" y="196" font-size="13" fill="#64748b">read-only · immutable base</text>
+    <text x="80" y="216" font-size="12" fill="#2563eb">lower layer · shared across sandboxes</text>
+  </g>
+
+  <!-- upper: tmpfs -->
+  <g>
+    <rect x="60" y="262" width="320" height="88" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="2" />
+    <text x="80" y="294" font-size="16" font-weight="600" fill="#0f172a">tmpfs — upper + work</text>
+    <text x="80" y="318" font-size="13" fill="#64748b">per-VM · writable scratch</text>
+    <text x="80" y="338" font-size="12" fill="#b45309">discarded when the VM dies</text>
+  </g>
+
+  <!-- overlay merge -->
+  <g>
+    <rect x="470" y="200" width="170" height="88" rx="10" fill="#ffffff" stroke="#0f172a" stroke-width="2" />
+    <text x="555" y="240" font-size="17" font-weight="700" text-anchor="middle" fill="#0f172a">overlayfs</text>
+    <text x="555" y="262" font-size="12" text-anchor="middle" fill="#94a3b8">lower + upper</text>
+  </g>
+
+  <!-- merged root -->
+  <g>
+    <rect x="730" y="200" width="250" height="88" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2" />
+    <text x="855" y="238" font-size="20" font-weight="700" text-anchor="middle" fill="#0f172a">/  (merged root)</text>
+    <text x="855" y="262" font-size="12" text-anchor="middle" fill="#059669">writable · per-VM · ephemeral</text>
+  </g>
+
+  <!-- arrows -->
+  <g fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="380" y1="184" x2="466" y2="222" stroke="#0f172a" marker-end="url(#ol-ink)" />
+    <line x1="380" y1="306" x2="466" y2="266" stroke="#0f172a" marker-end="url(#ol-ink)" />
+    <line x1="640" y1="244" x2="726" y2="244" stroke="#10b981" marker-end="url(#ol-green)" />
+  </g>
+  <text x="685" y="230" font-size="12" font-weight="600" text-anchor="middle" fill="#10b981">switch_root</text>
+
+  <text x="520" y="400" font-size="13" text-anchor="middle" fill="#94a3b8">Writes land in the tmpfs upper; the squashfs is never touched. Reset = discard the tmpfs.</text>
+</svg>

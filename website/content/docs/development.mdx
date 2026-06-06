@@ -1,0 +1,99 @@
+---
+title: Development
+description: Repo layout, build commands, the guest-image build, host verification, and the test suite.
+---
+
+## Repo layout
+
+```
+emberd/
+├── cmd/
+│   ├── emberd/          # host daemon: flag parsing, HTTP server, signal handling
+│   └── emberd-init/     # guest PID 1: boot.go, vsock.go, exec.go, main.go
+├── pkg/
+│   ├── api/             # HTTP types + api.Server, wired to a sandbox.Manager
+│   ├── proto/           # vsock wire protocol (shared host+guest)
+│   └── sandbox/         # Manager interface + errors
+│       └── firecracker/ # Firecracker-backed Manager (firecracker-go-sdk)
+├── rootfs/build.sh      # builds the guest initramfs
+├── scripts/             # serve.sh, emberctl.sh
+└── docs/                # source design docs (this site mirrors and expands them)
+```
+
+Module path `github.com/hdprajwal/emberd`, Go 1.26.
+
+## Build
+
+```bash
+go build -o bin/emberd ./cmd/emberd
+go build -o bin/emberd-init ./cmd/emberd-init
+./rootfs/build.sh          # → ~/firecracker-verify/emberd-initramfs.cpio
+```
+
+`rootfs/build.sh` cross-builds a static `emberd-init` (`CGO_ENABLED=0`) and packs
+it as `/init` in a cpio archive. Override the output path with `OUT=...`.
+
+## Test
+
+```bash
+go test ./...
+```
+
+Current coverage:
+
+- **`pkg/proto`** — framing round-trip, oversize-length rejection, and the
+  `DialGuest` hybrid-vsock handshake against a fake host socket.
+- **`cmd/emberd-init`** — `runExec` for success, stdin, non-zero exit, and timeout
+  (runs against the host's `python3`).
+
+The Firecracker manager and the HTTP layer are exercised end-to-end via
+`scripts/emberctl.sh test` rather than unit tests (booting a real VM in a unit
+test isn't practical yet — a fake-`firecracker` harness is a planned follow-up).
+
+## Host verification (optional)
+
+Before wiring up emberd, you can confirm the host can boot a Firecracker VM at all
+using the CI artifacts. Download the CI `initramfs.cpio` alongside the kernel and
+rootfs, then:
+
+```json title="vmconfig.json"
+{
+  "boot-source": {
+    "kernel_image_path": "/home/you/firecracker-verify/vmlinux-6.1.155",
+    "initrd_path": "/home/you/firecracker-verify/initramfs.cpio",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "path_on_host": "/home/you/firecracker-verify/ubuntu-24.04.squashfs",
+      "is_root_device": true,
+      "is_read_only": true
+    }
+  ],
+  "machine-config": { "vcpu_count": 1, "mem_size_mib": 512 }
+}
+```
+
+```bash
+timeout 15 firecracker --no-api --config-file vmconfig.json < /dev/null
+```
+
+Expect kernel boot messages and then a busybox prompt. The CI initramfs
+intentionally drops to busybox rather than chaining into Ubuntu — that's expected,
+and exactly why emberd ships its own initramfs.
+
+## Verifying the guest kernel's config
+
+emberd relies on several kernel options being built into the guest kernel
+(`SQUASHFS`, `OVERLAY_FS`, `DEVTMPFS`, `TMPFS`, `VIRTIO_BLK`, `VSOCKETS`,
+`VIRTIO_VSOCKETS`). If you swap kernels, confirm they're present — the stock CI
+kernel has all of them, verified by extracting its embedded `IKCONFIG`.
+
+## Conventions
+
+- **Design log.** Any design decision, deviation, weighed trade-off, or open
+  question goes in `docs/implementation-notes.html` in the same change. See
+  [Design notes](/docs/design-notes).
+- **Commits** are deliberate and code-only by request; docs are committed
+  separately.

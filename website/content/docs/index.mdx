@@ -1,0 +1,74 @@
+---
+title: Introduction
+description: What emberd is, what it isn't, and how the pieces fit together.
+---
+
+**emberd** is a Firecracker-based sandboxing runtime for executing AI-agent tool
+calls inside isolated microVMs. It's a local-first, open-source take on
+E2B / Modal-style sandboxes: create a sandbox, run code inside it, collect the
+output, then destroy it — in real hardware-virtualized isolation.
+
+```bash
+# Create a sandbox (boots a microVM), run code, tear it down.
+curl -X POST localhost:7777/sandboxes -d '{"language_pack":"python"}'
+# → {"id":"sb_a1b2c3d4e5f6"}
+
+curl -X POST localhost:7777/sandboxes/sb_a1b2c3d4e5f6/exec -d '{"code":"print(6*7)"}'
+# → {"stdout":"42\n","stderr":"","exit_code":0,"duration_ms":13}
+
+curl -X DELETE localhost:7777/sandboxes/sb_a1b2c3d4e5f6
+# → 204 No Content
+```
+
+## What emberd is
+
+- A single-machine daemon for short-lived, isolated code execution.
+- A KVM / Firecracker microVM runtime — **not** a container wrapper.
+- A small HTTP API for sandbox **create**, **exec**, and **destroy**.
+- A foundation for fast startup via Firecracker snapshot restore (planned).
+
+## What emberd is not
+
+- Not a Docker replacement. Containers share a kernel with the host; emberd uses
+  KVM virtualization, so the guest runs its own kernel.
+- Not a fleet orchestrator or serverless platform — it's one daemon on one box.
+- Not tied to Python long-term, though Python is the first language pack.
+- Not designed for persistent storage or cross-sandbox communication.
+
+## Why microVMs?
+
+A container shares the host kernel; a kernel bug or a container escape is a host
+compromise. A Firecracker microVM gives each sandbox its own kernel behind a KVM
+boundary — the same primitive AWS Lambda, Fly Machines, Modal, and E2B use to run
+untrusted code. The trade is that it's Linux + KVM only and needs a separate
+`firecracker` binary, which is fine for a runtime that is Linux-only by intent.
+
+<Callout type="info">
+  emberd is **pre-alpha**, but the full loop works end to end today: create boots
+  a real microVM, exec runs code inside it over a vsock control plane, and delete
+  tears it down. See the [Roadmap](/docs/roadmap) for what's still ahead
+  (hardening, snapshot restore, purpose-built language-pack images).
+</Callout>
+
+## The 30-second mental model
+
+<img
+  src="/diagrams/emberd-overview.svg"
+  alt="A client sends HTTP to the emberd daemon on the host; the daemon drives one firecracker process per sandbox and reaches emberd-init inside the guest microVM over vsock, where code runs against an overlayfs root."
+  className="my-6 w-full"
+/>
+
+- The **daemon** (`emberd`) owns the HTTP API and the lifecycle of each microVM.
+- **`emberd-init`** is PID 1 inside the guest; it serves a tiny control protocol
+  over vsock and runs submitted code.
+- There is **no network device** inside a sandbox in v0.1 — even the control
+  channel is vsock, not IP.
+
+## Where to go next
+
+<Cards>
+  <Card title="Getting started" href="/docs/getting-started" description="Install the prerequisites, build the binaries and initramfs, run your first sandbox." />
+  <Card title="Architecture" href="/docs/architecture" description="The components, the request lifecycle, and the runtime model." />
+  <Card title="Concepts" href="/docs/concepts" description="Deep dives: lifecycle, the vsock control plane, the guest rootfs, language packs." />
+  <Card title="API reference" href="/docs/api-reference" description="The three HTTP endpoints and their request/response shapes." />
+</Cards>

@@ -1,0 +1,144 @@
+---
+title: API Reference
+description: The three HTTP endpoints — create, exec, destroy — with request and response shapes and status codes.
+---
+
+The daemon listens on `127.0.0.1:7777` by default (override with `--addr`). All
+endpoints accept and return JSON. The surface is intentionally tiny.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/sandboxes` | Create a sandbox (boots a microVM). |
+| `POST` | `/sandboxes/{id}/exec` | Run code inside a sandbox. |
+| `DELETE` | `/sandboxes/{id}` | Destroy a sandbox. |
+
+---
+
+## POST /sandboxes
+
+Create and boot a new sandbox.
+
+**Request**
+
+```json
+{
+  "language_pack": "python"
+}
+```
+
+`language_pack` selects the rootfs and interpreter. Registered packs ship as
+`python` (`python3`) and `shell` (`/bin/sh`). Defaults to `python` if omitted or
+the body is empty.
+
+**Responses**
+
+| Status | Body | When |
+| --- | --- | --- |
+| `201 Created` | `{ "id": "sb_a1b2c3d4e5f6" }` | VM booted, handle recorded. |
+| `400 Bad Request` | `{ "error": "unknown language pack: \"ruby\"" }` | Pack not registered. |
+| `400 Bad Request` | `{ "error": "invalid request body" }` | Body present but not valid JSON. |
+| `500 Internal Server Error` | `{ "error": "..." }` | VM failed to boot. |
+
+```bash
+curl -X POST localhost:7777/sandboxes -d '{"language_pack":"python"}'
+# {"id":"sb_a1b2c3d4e5f6"}
+```
+
+<Callout type="info">
+  `201` means the VMM started and the VM is booting — not that the guest agent is
+  ready to serve exec yet. See the note under `exec` below.
+</Callout>
+
+---
+
+## POST `/sandboxes/{id}/exec`
+
+Run code inside an existing sandbox and return its output.
+
+**Request**
+
+```json
+{
+  "code": "print('hello world')",
+  "stdin": "",
+  "timeout_ms": 5000
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `code` | string | Source to run under the pack's interpreter. |
+| `stdin` | string | Optional. Piped to the program's stdin. |
+| `timeout_ms` | int | Optional. Wall-clock limit enforced inside the guest. |
+
+**Responses**
+
+| Status | Body | When |
+| --- | --- | --- |
+| `200 OK` | `ExecResponse` (below) | The interpreter ran (any exit code). |
+| `404 Not Found` | `{ "error": "sandbox not found" }` | No such live sandbox. |
+| `400 Bad Request` | `{ "error": "invalid request body" }` | Body not valid JSON. |
+| `500 Internal Server Error` | `{ "error": "..." }` | Couldn't reach the guest. |
+
+**`ExecResponse`**
+
+```json
+{
+  "stdout": "hello world\n",
+  "stderr": "",
+  "exit_code": 0,
+  "duration_ms": 13,
+  "error": ""
+}
+```
+
+- A **non-zero `exit_code` is a normal `200`** — your program ran and exited
+  non-zero. It is not an HTTP error.
+- `error` is non-empty only when the guest agent failed to *launch* the
+  interpreter (e.g. binary not found) or the run timed out. `error` is omitted
+  from the JSON when empty.
+
+```bash
+# Exit code propagation
+curl -X POST localhost:7777/sandboxes/$ID/exec \
+  -d '{"code":"import sys; sys.exit(7)"}'
+# {"stdout":"","stderr":"","exit_code":7,"duration_ms":12}
+
+# Timeout
+curl -X POST localhost:7777/sandboxes/$ID/exec \
+  -d '{"code":"import time; time.sleep(5)","timeout_ms":300}'
+# {"stdout":"","stderr":"","exit_code":-1,"duration_ms":301,"error":"execution timed out"}
+```
+
+<Callout type="warn">
+  **Race after create:** `exec` issued immediately after `create` may return a
+  `500` (couldn't connect) for ~1s while the guest boots and binds its vsock port.
+  Retry until it succeeds; `emberctl` and the bundled scripts already do.
+</Callout>
+
+---
+
+## DELETE `/sandboxes/{id}`
+
+Destroy a sandbox: `SIGTERM` the VMM, wait (bounded), remove its work directory.
+
+**Responses**
+
+| Status | Body | When |
+| --- | --- | --- |
+| `204 No Content` | _(empty)_ | Torn down. |
+| `404 Not Found` | `{ "error": "sandbox not found" }` | No such live sandbox. |
+
+```bash
+curl -X DELETE localhost:7777/sandboxes/$ID
+# 204
+```
+
+---
+
+## Notes
+
+- **No authentication.** Bind to localhost or front the daemon with your own auth
+  layer; emberd assumes a trusted caller.
+- **IDs** are `sb_` + 12 hex chars. They are opaque; don't parse them.
+- The full request/response Go types live in `pkg/api/api.go`.

@@ -1,0 +1,94 @@
+<svg viewBox="0 0 1200 720" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, sans-serif">
+  <rect x="1" y="1" width="1198" height="718" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" />
+
+  <defs>
+    <marker id="rf-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb" />
+    </marker>
+    <marker id="rf-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
+    </marker>
+    <marker id="rf-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444" />
+    </marker>
+    <marker id="rf-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f172a" />
+    </marker>
+  </defs>
+
+  <text x="40" y="52" font-size="30" font-weight="600" fill="#0f172a">How a request flows</text>
+  <text x="40" y="82" font-size="16" fill="#94a3b8">Each sandbox is one firecracker process; the daemon drives the guest agent over vsock.</text>
+
+  <!-- Panels -->
+  <rect x="36" y="104" width="556" height="588" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" />
+  <rect x="712" y="104" width="452" height="588" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" />
+  <text x="56" y="134" font-size="15" font-weight="700" fill="#0f172a">host · emberd daemon</text>
+  <text x="732" y="134" font-size="15" font-weight="700" fill="#0f172a">guest microVM · emberd-init (PID 1)</text>
+
+  <!-- Host entry chain -->
+  <g>
+    <rect x="60" y="156" width="150" height="46" rx="8" fill="#ffffff" stroke="#0f172a" stroke-width="2" />
+    <text x="135" y="184" font-size="14" font-weight="600" text-anchor="middle" fill="#0f172a">HTTP :7777</text>
+    <rect x="236" y="156" width="130" height="46" rx="8" fill="#ffffff" stroke="#0f172a" stroke-width="2" />
+    <text x="301" y="184" font-size="14" font-weight="600" text-anchor="middle" fill="#0f172a">api.Server</text>
+    <rect x="392" y="156" width="150" height="46" rx="8" fill="#ffffff" stroke="#0f172a" stroke-width="2" />
+    <text x="467" y="184" font-size="14" font-weight="600" text-anchor="middle" fill="#0f172a">Manager</text>
+  </g>
+  <g stroke="#0f172a" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="210" y1="179" x2="236" y2="179" marker-end="url(#rf-ink)" />
+    <line x1="366" y1="179" x2="392" y2="179" marker-end="url(#rf-ink)" />
+    <line x1="467" y1="202" x2="467" y2="250" marker-end="url(#rf-ink)" />
+  </g>
+  <text x="60" y="242" font-size="12" fill="#94a3b8">dispatches to one of:</text>
+
+  <!-- Host operation rows -->
+  <g>
+    <rect x="60" y="250" width="482" height="64" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
+    <text x="76" y="278" font-size="14" font-weight="600" fill="#0f172a">POST /sandboxes → Create</text>
+    <text x="76" y="300" font-size="13" fill="#94a3b8">boot a microVM (firecracker-go-sdk)</text>
+
+    <rect x="60" y="346" width="482" height="64" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
+    <text x="76" y="374" font-size="14" font-weight="600" fill="#0f172a">POST /sandboxes/{id}/exec → Exec</text>
+    <text x="76" y="396" font-size="13" fill="#94a3b8">dial vsock, send ExecRequest, read ExecResult</text>
+
+    <rect x="60" y="442" width="482" height="64" rx="8" fill="#ffffff" stroke="#ef4444" stroke-width="2" />
+    <text x="76" y="470" font-size="14" font-weight="600" fill="#0f172a">DELETE /sandboxes/{id} → Delete</text>
+    <text x="76" y="492" font-size="13" fill="#94a3b8">SIGTERM the VMM, wait, clean up</text>
+  </g>
+
+  <!-- Guest internals -->
+  <g>
+    <rect x="736" y="168" width="400" height="58" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
+    <text x="756" y="194" font-size="14" font-weight="600" fill="#0f172a">bootstrap rootfs</text>
+    <text x="756" y="214" font-size="13" fill="#94a3b8">overlay + switch_root</text>
+
+    <rect x="736" y="300" width="400" height="58" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
+    <text x="756" y="326" font-size="14" font-weight="600" fill="#0f172a">AF_VSOCK listener :1024</text>
+    <text x="756" y="346" font-size="13" fill="#94a3b8">accepts control connections</text>
+
+    <rect x="736" y="420" width="400" height="66" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
+    <text x="756" y="448" font-size="14" font-weight="600" fill="#0f172a">runExec</text>
+    <text x="756" y="470" font-size="13" fill="#94a3b8">temp file → interpreter → capture out</text>
+
+    <rect x="736" y="544" width="400" height="48" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="5 5" />
+    <text x="936" y="573" font-size="13" font-weight="600" text-anchor="middle" fill="#ef4444">VM killed · tmpfs discarded</text>
+  </g>
+  <g stroke="#0f172a" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="936" y1="226" x2="936" y2="300" marker-end="url(#rf-ink)" />
+    <line x1="936" y1="358" x2="936" y2="420" marker-end="url(#rf-ink)" />
+  </g>
+
+  <!-- Cross-boundary arrows -->
+  <g fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="542" y1="278" x2="736" y2="200" stroke="#2563eb" marker-end="url(#rf-blue)" />
+    <line x1="542" y1="368" x2="736" y2="322" stroke="#2563eb" marker-end="url(#rf-blue)" />
+    <line x1="736" y1="452" x2="542" y2="392" stroke="#10b981" marker-end="url(#rf-green)" />
+    <line x1="542" y1="478" x2="736" y2="562" stroke="#ef4444" marker-end="url(#rf-red)" />
+  </g>
+  <g>
+    <text x="640" y="226" font-size="12" font-weight="600" text-anchor="middle" fill="#2563eb">KVM · boot</text>
+    <text x="642" y="338" font-size="12" font-weight="600" text-anchor="middle" fill="#2563eb">ExecRequest</text>
+    <text x="640" y="412" font-size="12" font-weight="600" text-anchor="middle" fill="#10b981">ExecResult</text>
+    <text x="648" y="536" font-size="12" font-weight="600" text-anchor="middle" fill="#ef4444">SIGTERM</text>
+  </g>
+</svg>

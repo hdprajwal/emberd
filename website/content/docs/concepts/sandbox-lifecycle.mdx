@@ -1,0 +1,98 @@
+---
+title: Sandbox Lifecycle
+description: What create, exec, and delete actually do — the real code paths in the Firecracker-backed Manager.
+---
+
+A sandbox is one Firecracker microVM. The `sandbox.Manager` interface has exactly
+three methods, and the HTTP API maps one endpoint to each:
+
+```go
+type Manager interface {
+	Create(ctx context.Context, languagePack string) (*Sandbox, error)
+	Exec(ctx context.Context, id string, req proto.ExecRequest) (proto.ExecResult, error)
+	Delete(ctx context.Context, id string) error
+}
+```
+
+The Firecracker-backed implementation lives in `pkg/sandbox/firecracker`.
+
+## Create — boot a microVM
+
+`POST /sandboxes` → `Manager.Create`:
+
+1. **Resolve the language pack.** Look up `languagePack` in the registry. An
+   unknown name returns `ErrUnknownPack` → HTTP **400**. This happens before any
+   VM work, so it's cheap.
+2. **Allocate identity and workspace.** Generate `sb_<hex>`, create
+   `${TMPDIR}/emberd/<id>/`, open `vm.log`.
+3. **Set up the control channel.** Allocate a guest context ID (CID, counting up
+   from 3) and pick the host vsock socket path `<dir>/vsock.sock`.
+4. **Build the Firecracker config:**
+   - kernel = `vmlinux-6.1.155`, initrd = `emberd-initramfs.cpio`
+   - rootfs drive = the pack's squashfs, **read-only**, root device (`/dev/vda`)
+   - a hybrid-vsock device pointing at `vsock.sock` + the guest CID
+   - 1 vCPU, 256 MiB (configurable)
+   - kernel args = base args **plus** `emberd.interpreter=<pack interpreter>`
+5. **Launch the VMM.** Build the `firecracker` command (custom binary path,
+   per-VM API socket, console wired to a log file) and `Start` it under a
+   background context that lives for the VM's whole lifetime — **not** the HTTP
+   request context, which would cancel the VM when the request returns.
+6. **Record the handle** in the manager's map and return `{ "id": "sb_..." }`
+   with HTTP **201**.
+
+7. **Wait for readiness.** Before returning, `Create` blocks on `waitReady`,
+   which polls the guest vsock control plane (50ms interval, `BootTimeout`
+   default 15s). A successful hybrid-vsock `CONNECT`/`OK` handshake only happens
+   once `emberd-init` is past bootstrap and listening, so it's a precise
+   readiness signal — not a fixed sleep. If the guest never comes up, the
+   half-booted VM is torn down and an error returned.
+
+<Callout type="info">
+  Because `Create` waits for the guest to actually accept on vsock (~400ms on the
+  reference host), a returned sandbox is immediately usable — an `exec` issued
+  with zero delay succeeds on the first try, no client-side retry needed.
+</Callout>
+
+## Exec — run code in the guest
+
+`POST /sandboxes/{id}/exec` → `Manager.Exec`:
+
+1. Look up the live VM by ID (unknown → `ErrNotFound` → **404**).
+2. `proto.DialGuest(vsockUDS, GuestPort)` — connect to the host vsock socket and
+   perform the Firecracker hybrid-vsock `CONNECT`/`OK` handshake.
+3. Set a deadline on the connection: `timeout_ms + 10s`, or 60s if no timeout was
+   given, so a wedged guest can't hang the request.
+4. `WriteMessage(conn, ExecRequest)` then `ReadMessage(conn, &ExecResult)`.
+5. Map the result to the HTTP response.
+
+Inside the guest, `emberd-init` writes the code to a temp file, runs it under the
+pack's interpreter with the request's stdin piped in, and captures
+stdout/stderr/exit. A **non-zero exit from your program is a normal result**
+(`exit_code` set, `error` empty); only a failure to *launch* the interpreter
+populates `error`. See [the control plane](/docs/concepts/control-plane) for the
+wire details and [the guest rootfs](/docs/concepts/guest-rootfs) for how the
+interpreter runs.
+
+## Delete — tear it down
+
+`DELETE /sandboxes/{id}` → `Manager.Delete`:
+
+1. Remove the handle from the map (unknown → `ErrNotFound` → **404**).
+2. `StopVMM()` sends `SIGTERM` to the firecracker process — a clean VMM shutdown.
+3. `Wait` with a 5-second bound; cancel the VM's context (which kills the process
+   if the graceful stop stalled).
+4. `RemoveAll` the work directory.
+
+The per-VM tmpfs overlay dies with the VM, so there's nothing to garbage-collect
+inside the guest — the writable layer simply ceases to exist.
+
+## State machine
+
+<img
+  src="/diagrams/emberd-sandbox-lifecycle.svg"
+  alt="State machine: POST /sandboxes moves from (none) to Running; POST /sandboxes/{id}/exec is a self-loop on Running (a round-trip over vsock); DELETE /sandboxes/{id} moves from Running to gone (VMM killed, work dir removed)."
+  className="my-6 w-full"
+/>
+
+There is no "paused" or "stopped-but-kept" state in v0.1 — a sandbox is either
+running or gone. Snapshotting changes that in v0.2.

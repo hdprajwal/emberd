@@ -1,0 +1,9 @@
+{
+  "title": "Concepts",
+  "pages": [
+    "sandbox-lifecycle",
+    "control-plane",
+    "guest-rootfs",
+    "language-packs"
+  ]
+}

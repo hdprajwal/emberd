@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="emberd">
+<defs>
+<linearGradient id="ember" x1="32" y1="17" x2="32" y2="47" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ffce7a"/>
+<stop offset="0.5" stop-color="#ff7a3f"/>
+<stop offset="1" stop-color="#df461d"/>
+</linearGradient>
+</defs>
+<rect width="64" height="64" rx="16" fill="#0d0d0f"/>
+<rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15.25" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1.5"/>
+<g transform="translate(13.6 14.7) scale(0.275)">
+<path d="M0 83.6663L66.672 100.333L133.333 83.6663V100.333L66.672 117L0 100.333V83.6663ZM0 50.333L66.672 66.9997L133.333 50.333V66.9997L66.672 83.6663L0 66.9997V50.333ZM0 16.9997L66.672 0.333008L133.333 16.9997V33.6663L66.672 50.333L0 33.6663V16.9997Z" fill="url(#ember)"/>
+</g>
+</svg>

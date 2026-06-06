@@ -1,0 +1,94 @@
+---
+title: The vsock Control Plane
+description: The host↔guest wire protocol, the Firecracker hybrid-vsock handshake, and the raw-fd transport in the guest.
+---
+
+All host↔guest traffic — exec requests and their results — travels over a
+**virtio-vsock** device, never an IP network. This keeps the "no network"
+guarantee honest: a v0.1 sandbox has no NIC at all, yet the daemon can still talk
+to it. The protocol lives in `pkg/proto`, the one package shared by the daemon and
+`emberd-init`.
+
+## The wire format
+
+Every message is a **4-byte big-endian length prefix** followed by that many bytes
+of JSON. One `ExecRequest` host→guest, one `ExecResult` guest→host, per
+connection. Messages are capped at 64 MiB to bound allocations against a corrupt
+or hostile length prefix.
+
+```go
+type ExecRequest struct {
+	Code      string `json:"code"`
+	Stdin     string `json:"stdin,omitempty"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
+}
+
+type ExecResult struct {
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMs int    `json:"duration_ms"`
+	Error      string `json:"error,omitempty"` // set only on launch failure
+}
+```
+
+JSON over a hand-rolled length prefix (rather than gRPC or protobuf) keeps the
+dependency surface tiny, stays debuggable, and matches the REST API's existing
+JSON shapes. `WriteMessage`/`ReadMessage` implement the framing.
+
+## The hybrid-vsock handshake
+
+Firecracker exposes vsock to the host as a **Unix domain socket** (the
+"hybrid vsock" model). To reach a port inside the guest, the host:
+
+1. Connects to the host-side Unix socket (`<workdir>/<id>/vsock.sock`).
+2. Sends `CONNECT <port>\n`.
+3. Reads back an `OK <hostport>\n` acknowledgement line.
+4. Treats everything after that line as the raw guest stream.
+
+`proto.DialGuest` does exactly this. One subtlety: it reads the ack **one byte at a
+time** rather than with a buffered reader, so it can't accidentally consume bytes
+of the guest's data stream that arrive right after the newline. It also bounds the
+dial (5s) and the handshake (10s) so a missing guest can't hang the caller.
+
+<img
+  src="/diagrams/emberd-vsock-handshake.svg"
+  alt="Sequence: the host connects to the firecracker Unix socket and sends CONNECT 1024; the guest accepts and the host reads an OK ack; the host then sends a length-prefixed ExecRequest frame which the guest reads, and the guest writes back an ExecResult frame."
+  className="my-6 w-full"
+/>
+
+The guest binds vsock port **1024** (`proto.GuestPort`).
+
+## The guest listener (and why not `net.Conn`)
+
+`emberd-init` opens an `AF_VSOCK` socket with `golang.org/x/sys/unix`, binds
+`VMADDR_CID_ANY:1024`, and accepts connections. Each accepted connection is
+handled by reading one `ExecRequest`, running it, and writing one `ExecResult`.
+
+The catch: **Go's `net.FileConn` rejects vsock file descriptors** — wrapping an
+accepted `AF_VSOCK` fd fails with `getsockname: address family not supported`. So
+the guest reads and writes the raw fd directly through a tiny adapter:
+
+```go
+type vsockConn struct{ fd int }
+
+func (c *vsockConn) Read(p []byte) (int, error)  { /* unix.Read, retry EINTR, map 0→EOF */ }
+func (c *vsockConn) Write(p []byte) (int, error) { /* unix.Write in a full-write loop */ }
+func (c *vsockConn) Close() error                { return unix.Close(c.fd) }
+```
+
+`vsockConn` satisfies `io.Reader`/`io.Writer`, which is all `proto.ReadMessage`/
+`WriteMessage` need. The host side, by contrast, is a normal Unix socket, so it
+uses `net.Dial` as usual.
+
+<Callout type="info">
+  This was found the honest way — the first end-to-end attempt logged
+  `wrap vsock conn: ... address family not supported` on every connection until
+  the raw-fd adapter replaced `net.FileConn`.
+</Callout>
+
+## Kernel requirements
+
+The guest kernel must have `CONFIG_VSOCKETS` and `CONFIG_VIRTIO_VSOCKETS`. The
+Firecracker CI kernel (`vmlinux-6.1.155`) has both built in, which is why emberd
+runs on the stock artifacts with no custom kernel.

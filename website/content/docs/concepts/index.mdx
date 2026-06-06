@@ -1,0 +1,14 @@
+---
+title: Overview
+description: The four ideas you need to understand how emberd actually works.
+---
+
+These four pages cover the moving parts behind the simple HTTP API. Read them in
+order for the full picture, or jump to whichever you're debugging.
+
+<Cards>
+  <Card title="Sandbox lifecycle" href="/docs/concepts/sandbox-lifecycle" description="What create, exec, and delete actually do — step by step, with the real code paths." />
+  <Card title="The vsock control plane" href="/docs/concepts/control-plane" description="The host↔guest wire protocol, the hybrid-vsock handshake, and why we don't use net.Conn in the guest." />
+  <Card title="The guest rootfs" href="/docs/concepts/guest-rootfs" description="The custom initramfs, the overlayfs root, and the initramfs-style switch_root." />
+  <Card title="Language packs" href="/docs/concepts/language-packs" description="How language_pack selects a rootfs and interpreter, and how the interpreter reaches the guest." />
+</Cards>

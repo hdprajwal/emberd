@@ -1,0 +1,50 @@
+---
+title: Roadmap
+description: What works today, what's next, and the smaller follow-ups on deck.
+---
+
+## What works today
+
+- `POST /sandboxes` boots a real Firecracker microVM.
+- `POST /sandboxes/{id}/exec` runs code inside it (Python or shell) over the vsock
+  control plane and returns stdout/stderr/exit/duration.
+- `DELETE /sandboxes/{id}` tears it down and cleans up.
+- The guest boots a custom initramfs into an **overlayfs root** (squashfs lower +
+  tmpfs upper) via `switch_root`.
+- `language_pack` selects the rootfs **and** interpreter; unknown packs are
+  rejected.
+- `create` blocks on a vsock **readiness probe**, so a returned sandbox is
+  immediately usable — `exec` right after `create` no longer races the boot.
+- `emberd-init` runs as **PID 1** and reaps orphaned children, so a workload that
+  double-forks doesn't leak zombies for the life of the microVM.
+
+<Callout type="info">
+  Verified end to end: `print(6*7)` → `42`, exit-code propagation, stderr capture,
+  stdin piping, and timeouts firing — all through real microVMs.
+</Callout>
+
+## Next milestones
+
+1. **Purpose-built language-pack images.** Today both default packs share the
+   Ubuntu verification squashfs (only the interpreter differs). Build minimal,
+   per-language squashfs images (e.g. Alpine + Python 3) and point the packs at
+   them. The selection logic is done; this is producing the artifact. (Needs
+   `mksquashfs`/`squashfs-tools`, absent on the reference dev host.)
+2. **Hardening.** Run under the Firecracker **jailer**, add **seccomp** filters,
+   and enforce per-sandbox resource limits (CPU, memory, wall-clock, pids). The
+   aggressiveness depends on the threat model — an
+   [open question](/docs/design-notes).
+3. **Snapshot restore (v0.2).** Pre-warm a paused VM per pack, snapshot memory +
+   state, and restore-on-create with a fresh tmpfs overlay — the path to
+   single-digit-millisecond acquire times.
+
+## Smaller follow-ups on deck
+
+- **Manager/API unit tests** behind a fake `firecracker` binary.
+- **Opt-in egress** — per-sandbox network allowlist (TAP + iptables).
+
+## Further out
+
+- A warm pool keyed by language pack for constant-time acquisition.
+- Additional language packs (Node, etc.).
+- A Unix-socket transport for trusted in-process clients.

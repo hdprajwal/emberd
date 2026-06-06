@@ -1,0 +1,60 @@
+---
+title: Design Notes
+description: The locked-in decisions and the trade-offs behind them — a summary of the running design log.
+---
+
+emberd keeps a running design log in `docs/implementation-notes.html` (decisions,
+deviations, trade-offs, open questions, each dated). This page summarizes the
+decisions that shape the system today.
+
+## Locked-in decisions
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Isolation primitive | Firecracker microVM | Real KVM isolation; the primitive Lambda/Fly/Modal/E2B use. Credible path to &lt;100ms via snapshots. |
+| Language | Go + `firecracker-go-sdk` | Mature AWS-maintained SDK; fast path to v0.1; approachable for contributors. |
+| API | HTTP REST, `127.0.0.1:7777` | Simple, debuggable with curl, no codegen. gRPC unlikely. |
+| Rootfs | read-only squashfs + tmpfs overlay | Shared base pages, trivial reset, smaller snapshots — the Modal/E2B pattern. |
+| Control plane | vsock, not virtual networking | Keeps "no network" honest; no IP stack needed in the guest for control. |
+| Wire format | length-prefixed JSON | Tiny dependency surface, debuggable, matches the REST shapes. |
+| First language pack | Python | Dominant target for agent tool calls. |
+| Default network policy | none | Default-off is safer; adding egress later is easier than locking down. |
+| License | MIT | Simple permissive terms. |
+
+## Trade-offs worth knowing
+
+- **Firecracker over gVisor.** Heavier to operate (KVM, Linux-only, extra binary)
+  but an unambiguously stronger boundary and a better cold-start story. emberd is
+  Linux-only by intent, so the portability gVisor would buy doesn't matter.
+- **Snapshot restore vs cold boot.** v0.1 cold-boots (~125ms VMM + rootfs init +
+  interpreter warmup). Snapshot restore (5–30ms) is the only credible path to
+  sub-100ms and is the v0.2 target; the cost is large per-pack snapshots that need
+  versioning.
+- **Per-sandbox VM vs warm pool.** Per-sandbox is the correct, simplest baseline.
+  A warm pool (constant-time acquire) comes later, with a "is this really clean?"
+  verification step.
+
+## Notable deviations (and how they resolved)
+
+- **chroot → overlayfs.** The first live-exec build took a shortcut: read-only
+  chroot with a tmpfs only on `/tmp`. It was later replaced the same day with the
+  intended overlayfs lower/upper + `switch_root`, so the whole guest root is now
+  writable scratch. See [the guest rootfs](/docs/concepts/guest-rootfs).
+- **`net.FileConn` → raw fd.** Go can't wrap an `AF_VSOCK` fd, so the guest reads
+  and writes the raw descriptor directly. See
+  [the control plane](/docs/concepts/control-plane).
+- **PID 1 has no `$PATH`.** Discovered when `python3` wasn't resolvable inside the
+  guest; `emberd-init` now sets a default `PATH`/`HOME` during bootstrap.
+
+## Open questions
+
+These are deliberately unresolved; they'll be decided when they become relevant:
+
+- **Threat model.** Buggy code from trusted agents, intentionally malicious code
+  via prompt injection, or both? Decides how aggressive jailer/seccomp hardening
+  needs to be.
+- **Deployment shape.** System daemon (one per machine, multi-tenant by sandbox),
+  embedded library (one per agent process), or both? Affects API stability.
+- **Resource-limit units.** CPU as millicpu / vcpu / host shares? Sensible
+  defaults?
+- **Second language pack.** Node next, or harden Python first?
