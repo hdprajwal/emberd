@@ -1,0 +1,36 @@
+# emberd eval harness configuration.
+# Ships tiny (smoke-test scale). Dial the counts up here to scale the run.
+
+# Model held constant across both variants. Configurable via init_chat_model.
+model:
+  # LangChain "provider:model" id passed to init_chat_model.
+  id: "anthropic:claude-opus-4-8"
+  temperature: 0.0
+  max_tokens: 4096
+
+# emberd daemon HTTP endpoint used by the sandbox variant.
+emberd:
+  base_url: "http://127.0.0.1:7777"
+  # Per-exec timeout sent to the daemon.
+  exec_timeout_ms: 30000
+
+# Throwaway Docker host used by the shell variant.
+bash_host:
+  image: "python:3.12-slim"
+  # Per-command wall-clock timeout (seconds).
+  command_timeout_s: 30
+
+# Task selection and trial counts.
+tasks:
+  # Glob (relative to eval/) selecting which task files to run.
+  glob: "tasks/**/*.yaml"
+  # Trials per (task, variant). Bump for statistical signal.
+  trials: 2
+
+# Per-trial agent budgets. A trial that exceeds either is marked "truncated".
+budget:
+  max_steps: 12
+  max_seconds: 180
+
+# Output.
+results_dir: "results"
