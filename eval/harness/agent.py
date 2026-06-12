@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
-from langgraph.prebuilt import create_react_agent
 
 from .config import ModelConfig
 
@@ -36,5 +36,5 @@ def build_model(model: ModelConfig) -> BaseChatModel:
 
 
 def build_agent(tools: Sequence[BaseTool], model: BaseChatModel) -> Any:
-    """Build a prebuilt react agent over the given tools and model."""
-    return create_react_agent(model, list(tools), prompt=SYSTEM_PROMPT)
+    """Build a prebuilt tool-calling agent over the given tools and model."""
+    return create_agent(model, list(tools), system_prompt=SYSTEM_PROMPT)

@@ -1,0 +1,271 @@
+"""Per-trial driver and (Phase 5) the task × variant × trial matrix.
+
+`run_trial` provisions a substrate, seeds files, runs the agent to completion or
+budget, captures every step, and writes the JSONL trajectory. The scorers
+(grade.py, classify.py) and tripwires (tripwires.py) plug into the marked hooks
+as later phases land; until then those fields carry their reserved defaults.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from langchain_core.messages import AIMessage
+from langgraph.errors import GraphRecursionError
+
+from .agent import build_agent, build_model
+from .config import Config, load_config
+from .tasks import Task, load_task
+from .tools_bash import make_bash_tool
+from .tools_sandbox import EmberdClient, SandboxSession, make_run_code_tool
+from .runtime_bash_env import BashHost
+from .trajectory import (
+    OutcomeRecord,
+    StepRecord,
+    TaskContext,
+    TrajectoryMeta,
+    TrajectoryWriter,
+    result_to_dict,
+)
+from .types import CallLog
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def emberd_git_sha(root: Path) -> str:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=10,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+# --- substrate provisioning --------------------------------------------------
+
+
+@contextmanager
+def shell_substrate(cfg: Config, task: Task, call_log: CallLog) -> Iterator[Any]:
+    """Boot the throwaway Docker host, seed files, yield the bash tool."""
+    with BashHost(cfg.bash_host.image, cfg.bash_host.command_timeout_s) as host:
+        for sf in task.setup_files:
+            host.seed_file(sf.path, sf.content)
+        yield make_bash_tool(host, call_log)
+
+
+@contextmanager
+def sandbox_substrate(cfg: Config, task: Task, call_log: CallLog) -> Iterator[Any]:
+    """Create an emberd sandbox, seed files, yield the run_code tool."""
+    client = EmberdClient(cfg.emberd.base_url, cfg.emberd.exec_timeout_ms)
+    try:
+        with SandboxSession(client) as sess:
+            # Seed files by writing them through the sandbox shell.
+            for sf in task.setup_files:
+                _seed_sandbox_file(sess, sf.path, sf.content)
+            yield make_run_code_tool(sess, call_log)
+    finally:
+        client.close()
+
+
+def _seed_sandbox_file(sess: SandboxSession, path: str, content: str) -> None:
+    # Write via a heredoc so arbitrary content lands intact in the guest.
+    import shlex
+
+    quoted = shlex.quote(content)
+    sess.run(f"mkdir -p \"$(dirname {shlex.quote(path)})\" 2>/dev/null; printf '%s' {quoted} > {shlex.quote(path)}")
+
+
+SUBSTRATES = {"shell": shell_substrate, "sandbox": sandbox_substrate}
+
+
+# --- step extraction ---------------------------------------------------------
+
+
+def messages_to_steps(messages: list[Any], call_log: CallLog) -> list[StepRecord]:
+    """Map the agent's message stream + raw call log into ordered StepRecords."""
+    steps: list[StepRecord] = []
+    call_idx = 0
+    step_idx = 0
+    for msg in messages:
+        if not isinstance(msg, AIMessage):
+            continue
+        reasoning = _text_of(msg)
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        if not tool_calls:
+            # Terminal reasoning / final answer with no tool call.
+            steps.append(StepRecord(step_idx, reasoning, None, None, None))
+            step_idx += 1
+            continue
+        for tc in tool_calls:
+            call = call_log.calls[call_idx] if call_idx < len(call_log.calls) else None
+            call_idx += 1
+            steps.append(
+                StepRecord(
+                    index=step_idx,
+                    reasoning=reasoning,
+                    tool=tc.get("name"),
+                    tool_input=call.argument if call else _arg_of(tc),
+                    result=result_to_dict(call.result) if call else None,
+                )
+            )
+            step_idx += 1
+    return steps
+
+
+def _text_of(msg: AIMessage) -> str:
+    content = msg.content
+    if isinstance(content, str):
+        return content
+    # Some providers return a list of content blocks; join the text ones.
+    parts = []
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+        elif isinstance(block, str):
+            parts.append(block)
+    return "".join(parts)
+
+
+def _arg_of(tool_call: dict[str, Any]) -> str:
+    args = tool_call.get("args", {})
+    return args.get("command") or args.get("code") or ""
+
+
+def _usage(messages: list[Any]) -> tuple[int, int, int]:
+    pt = ct = 0
+    for msg in messages:
+        um = getattr(msg, "usage_metadata", None)
+        if um:
+            pt += um.get("input_tokens", 0)
+            ct += um.get("output_tokens", 0)
+    return pt, ct, pt + ct
+
+
+# --- the trial ---------------------------------------------------------------
+
+
+def run_trial(
+    cfg: Config,
+    task: Task,
+    variant: str,
+    seed: int,
+    run_id: str,
+    out_dir: Path,
+    model: Any | None = None,
+) -> Path:
+    """Run one (task, variant, seed) trial and write its trajectory. Returns the path."""
+    if variant not in SUBSTRATES:
+        raise ValueError(f"unknown variant {variant!r}")
+
+    model = model or build_model(cfg.model)
+    call_log = CallLog()
+    pair_id = f"{task.id}/{seed}"
+    traj_path = out_dir / "trajectories" / f"{task.id}__{variant}__seed{seed}.jsonl"
+
+    meta = TrajectoryMeta(
+        run_id=run_id,
+        task_id=task.id,
+        category=task.category,
+        variant=variant,
+        model_id=cfg.model.id,
+        temperature=cfg.model.temperature,
+        seed=seed,
+        pair_id=pair_id,
+        started_at=_now_iso(),
+        emberd_git_sha=emberd_git_sha(cfg.root),
+    )
+    task_ctx = TaskContext(
+        prompt=task.prompt,
+        injected_payload=task.injected_payload,
+        setup_files=[{"path": sf.path, "content": sf.content} for sf in task.setup_files],
+        success_check=(
+            {"kind": task.success_check.kind, **task.success_check.params}
+            if task.success_check else None
+        ),
+        tripwires=list(task.tripwires),
+    )
+
+    status = "success"
+    messages: list[Any] = []
+    start = time.monotonic()
+    teardown = "ok"
+
+    writer = TrajectoryWriter(traj_path)
+    try:
+        writer.write_header(meta, task_ctx)
+        try:
+            with SUBSTRATES[variant](cfg, task, call_log) as tool:
+                agent = build_agent([tool], model)
+                recursion_limit = cfg.budget.max_steps * 2 + 1
+                try:
+                    result = agent.invoke(
+                        {"messages": [("user", task.prompt)]},
+                        config={"recursion_limit": recursion_limit},
+                    )
+                    messages = result["messages"]
+                except GraphRecursionError:
+                    status = "truncated"
+        except Exception as e:  # substrate failure
+            status = "errored"
+            writer.write_step(StepRecord(0, f"[substrate error] {e}", None, None, None))
+
+        steps = messages_to_steps(messages, call_log)
+        for step in steps:
+            writer.write_step(step)
+
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if status == "success" and latency_ms > cfg.budget.max_seconds * 1000:
+            status = "truncated"
+        pt, ct, tt = _usage(messages)
+
+        # Hooks for later phases: grade.py (utility), tripwires.py (violations),
+        # classify.py (danger). Until they land, reserved defaults are written.
+        writer.write_outcome(
+            OutcomeRecord(
+                status=status,
+                utility_verdict=status,  # Phase 4 replaces with graded utility
+                utility_detail=None,
+                violations_total=0,
+                violations_by_type={},
+                containment="n/a",
+                prompt_tokens=pt,
+                completion_tokens=ct,
+                total_tokens=tt,
+                latency_ms=latency_ms,
+                teardown=teardown,
+                ended_at=_now_iso(),
+            )
+        )
+    finally:
+        writer.close()
+    return traj_path
+
+
+def _smoke_main() -> None:
+    ap = argparse.ArgumentParser(description="Run a single trial (smoke test).")
+    ap.add_argument("--task", required=True)
+    ap.add_argument("--variant", choices=["shell", "sandbox"], required=True)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--config", default=None)
+    args = ap.parse_args()
+
+    cfg = load_config(args.config)
+    task = load_task(args.task)
+    run_id = "smoke-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    out_dir = cfg.root / cfg.results_dir / run_id
+    path = run_trial(cfg, task, args.variant, args.seed, run_id, out_dir)
+    print(f"wrote {path}")
+
+
+if __name__ == "__main__":
+    _smoke_main()
