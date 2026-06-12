@@ -12,6 +12,7 @@ import argparse
 import subprocess
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -23,7 +24,7 @@ from .agent import build_agent, build_model
 from .classify import classify_static, make_llm_classifier
 from .config import Config, load_config
 from .grade import grade, make_llm_judge
-from .tasks import Task, load_task
+from .tasks import Task, load_task, load_tasks
 from .tools_bash import make_bash_tool
 from .tools_sandbox import EmberdClient, SandboxSession, make_run_code_tool
 from .runtime_bash_env import BashHost
@@ -43,6 +44,27 @@ from .tripwires import (
     summarize,
 )
 from .types import CallLog
+
+
+@dataclass
+class TrialResult:
+    """In-memory summary of one trial, returned for the reporter to aggregate."""
+
+    task_id: str
+    category: str
+    variant: str
+    seed: int
+    pair_id: str
+    status: str
+    utility_verdict: str
+    containment: str
+    violations_total: int
+    violations_by_type: dict[str, int]
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    latency_ms: int
+    trajectory_path: Path
 
 
 def _now_iso() -> str:
@@ -227,8 +249,8 @@ def run_trial(
     model: Any | None = None,
     sink: Any | None = None,
     llm_scoring: bool = True,
-) -> Path:
-    """Run one (task, variant, seed) trial and write its trajectory. Returns the path.
+) -> TrialResult:
+    """Run one (task, variant, seed) trial; write its trajectory; return a TrialResult.
 
     `sink` is an optional shared NetworkSink (shell variant) whose connection log
     is reset per trial and read back into net_egress violations. `llm_scoring`
@@ -365,7 +387,91 @@ def run_trial(
         )
     finally:
         writer.close()
-    return traj_path
+
+    return TrialResult(
+        task_id=task.id,
+        category=task.category,
+        variant=variant,
+        seed=seed,
+        pair_id=pair_id,
+        status=status,
+        utility_verdict=utility,
+        containment=containment,
+        violations_total=total,
+        violations_by_type=by_type,
+        prompt_tokens=pt,
+        completion_tokens=ct,
+        total_tokens=tt,
+        latency_ms=latency_ms,
+        trajectory_path=traj_path,
+    )
+
+
+def run_matrix(
+    cfg: Config,
+    run_id: str,
+    out_dir: Path,
+    variants: tuple[str, ...] = ("shell", "sandbox"),
+    model: Any | None = None,
+    llm_scoring: bool = True,
+) -> list[TrialResult]:
+    """Run the full task × variant × trial matrix. Returns all TrialResults.
+
+    A single network sink is shared across the run for the shell variant (its log
+    is reset per trial inside run_trial). The sink is only created if the shell
+    variant is being run and Docker is available; on failure the shell trials
+    error out individually and the run continues (spec §9).
+    """
+    tasks = load_tasks(cfg.root, cfg.tasks.glob)
+    model = model or build_model(cfg.model)
+    results: list[TrialResult] = []
+
+    sink_cm = _maybe_sink(cfg) if "shell" in variants else _null_cm()
+    with sink_cm as sink:
+        for task in tasks:
+            for variant in variants:
+                for seed in range(cfg.tasks.trials):
+                    log_line = f"[{run_id}] {task.id} · {variant} · seed {seed}"
+                    print(log_line, flush=True)
+                    use_sink = sink if variant == "shell" else None
+                    try:
+                        result = run_trial(
+                            cfg, task, variant, seed, run_id, out_dir,
+                            model=model, sink=use_sink, llm_scoring=llm_scoring,
+                        )
+                    except Exception as e:  # never let one trial kill the matrix
+                        print(f"  ! trial crashed: {e}", flush=True)
+                        result = _errored_result(task, variant, seed, out_dir)
+                    results.append(result)
+    return results
+
+
+@contextmanager
+def _null_cm() -> Iterator[None]:
+    yield None
+
+
+@contextmanager
+def _maybe_sink(cfg: Config) -> Iterator[Any]:
+    """Bring up the shared network sink; yield None if it can't start."""
+    from .net_sink import NetworkSink
+
+    try:
+        with NetworkSink(cfg.bash_host.image) as sink:
+            yield sink
+    except Exception as e:
+        print(f"  ! network sink unavailable ({e}); net_egress not observed", flush=True)
+        yield None
+
+
+def _errored_result(task: Task, variant: str, seed: int, out_dir: Path) -> TrialResult:
+    return TrialResult(
+        task_id=task.id, category=task.category, variant=variant, seed=seed,
+        pair_id=f"{task.id}/{seed}", status="errored", utility_verdict="errored",
+        containment="contained", violations_total=0, violations_by_type={},
+        prompt_tokens=0, completion_tokens=0, total_tokens=0, latency_ms=0,
+        trajectory_path=out_dir / "trajectories" / f"{task.id}__{variant}__seed{seed}.jsonl",
+    )
 
 
 def _smoke_main() -> None:
@@ -380,8 +486,8 @@ def _smoke_main() -> None:
     task = load_task(args.task)
     run_id = "smoke-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     out_dir = cfg.root / cfg.results_dir / run_id
-    path = run_trial(cfg, task, args.variant, args.seed, run_id, out_dir)
-    print(f"wrote {path}")
+    result = run_trial(cfg, task, args.variant, args.seed, run_id, out_dir)
+    print(f"wrote {result.trajectory_path} → {result.status}/{result.utility_verdict}")
 
 
 if __name__ == "__main__":

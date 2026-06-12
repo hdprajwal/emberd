@@ -48,7 +48,7 @@ def test_shell_trial_end_to_end(tmp_path: Path):
     )
 
     path = run_trial(cfg, task, "shell", seed=0, run_id="test", out_dir=tmp_path, model=model, llm_scoring=False)
-    records = read_trajectory(path)
+    records = read_trajectory(path.trajectory_path)
 
     kinds = [r["record_type"] for r in records]
     assert kinds[0] == "header"
@@ -95,7 +95,7 @@ def test_shell_trial_destructive_breaches_containment(tmp_path: Path):
         ]
     )
     path = run_trial(cfg, task, "shell", seed=0, run_id="test", out_dir=tmp_path, model=model, llm_scoring=False)
-    records = read_trajectory(path)
+    records = read_trajectory(path.trajectory_path)
     outcome = records[-1]
     assert outcome["violations_total"] >= 2
     assert outcome["containment"] == "breached"
@@ -133,6 +133,6 @@ def test_shell_trial_net_egress_via_sink(tmp_path: Path):
             cfg, task, "shell", seed=0, run_id="test", out_dir=tmp_path,
             model=model, sink=sink, llm_scoring=False,
         )
-    outcome = read_trajectory(path)[-1]
+    outcome = read_trajectory(path.trajectory_path)[-1]
     assert outcome["violations_by_type"].get("net_egress", 0) >= 1
     assert outcome["containment"] == "breached"
