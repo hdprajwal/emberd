@@ -20,7 +20,9 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphRecursionError
 
 from .agent import build_agent, build_model
+from .classify import classify_static, make_llm_classifier
 from .config import Config, load_config
+from .grade import grade, make_llm_judge
 from .tasks import Task, load_task
 from .tools_bash import make_bash_tool
 from .tools_sandbox import EmberdClient, SandboxSession, make_run_code_tool
@@ -165,6 +167,28 @@ def _arg_of(tool_call: dict[str, Any]) -> str:
     return args.get("command") or args.get("code") or ""
 
 
+def _final_answer(messages: list[Any]) -> str:
+    """The agent's last text message (its final answer)."""
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            return _text_of(msg)
+    return ""
+
+
+def annotate_danger(steps: list[StepRecord], classifier: Any | None) -> None:
+    """Label each tool-call step: static rule always, LLM judge if available."""
+    for step in steps:
+        if step.tool_input is None:
+            continue
+        static = classify_static(step.tool_input)
+        step.danger["static_label"] = static.label
+        step.danger["static_rule"] = static.rule
+        if classifier is not None:
+            judged = classifier(step.tool_input)
+            step.danger["judge_label"] = judged.label
+            step.danger["judge_rationale"] = judged.rationale
+
+
 def annotate_secret_reads(steps: list[StepRecord], markers: dict[str, str]) -> None:
     """Attach a secret_read delta to the specific step whose output leaked a marker."""
     if not markers:
@@ -202,16 +226,21 @@ def run_trial(
     out_dir: Path,
     model: Any | None = None,
     sink: Any | None = None,
+    llm_scoring: bool = True,
 ) -> Path:
     """Run one (task, variant, seed) trial and write its trajectory. Returns the path.
 
     `sink` is an optional shared NetworkSink (shell variant) whose connection log
-    is reset per trial and read back into net_egress violations.
+    is reset per trial and read back into net_egress violations. `llm_scoring`
+    enables the LLM danger classifier and the LLM utility judge (set False to
+    score with static rules / deterministic checks only — e.g. in tests).
     """
     if variant not in SUBSTRATES:
         raise ValueError(f"unknown variant {variant!r}")
 
     model = model or build_model(cfg.model)
+    classifier = make_llm_classifier(model) if llm_scoring else None
+    judge = make_llm_judge(model) if llm_scoring else None
     call_log = CallLog()
     pair_id = f"{task.id}/{seed}"
     traj_path = out_dir / "trajectories" / f"{task.id}__{variant}__seed{seed}.jsonl"
@@ -289,6 +318,7 @@ def run_trial(
 
         steps = messages_to_steps(messages, call_log)
         annotate_secret_reads(steps, markers)
+        annotate_danger(steps, classifier)
         for step in steps:
             writer.write_step(step)
 
@@ -296,6 +326,14 @@ def run_trial(
         if status == "success" and latency_ms > cfg.budget.max_seconds * 1000:
             status = "truncated"
         pt, ct, tt = _usage(messages)
+
+        # Utility grade: deterministic check if the task defines one, else judge.
+        if status == "errored":
+            utility = "errored"
+            utility_detail = "substrate failure"
+        else:
+            g = grade(task, _final_answer(messages), call_log, judge=judge)
+            utility, utility_detail = g.verdict, g.detail
 
         # Record ALL detected host effects losslessly...
         total, by_type = summarize(violations)
@@ -309,12 +347,11 @@ def run_trial(
         else:
             containment = "breached" if relevant else "contained"
 
-        # Utility grading is Phase 4; until then utility mirrors trial status.
         writer.write_outcome(
             OutcomeRecord(
                 status=status,
-                utility_verdict=status,
-                utility_detail=None,
+                utility_verdict=utility,
+                utility_detail=utility_detail,
                 violations_total=total,
                 violations_by_type=by_type,
                 containment=containment,
