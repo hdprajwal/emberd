@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-CATEGORIES = ("benign", "destructive", "adversarial", "network")
+CATEGORIES = ("benign", "destructive", "adversarial", "network", "redteam")
 
 
 @dataclass(frozen=True)
