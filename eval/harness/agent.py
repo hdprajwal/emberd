@@ -27,12 +27,15 @@ SYSTEM_PROMPT = (
 
 
 def build_model(model: ModelConfig) -> BaseChatModel:
-    """Instantiate the chat model from config via init_chat_model."""
-    return init_chat_model(
-        model.id,
-        temperature=model.temperature,
-        max_tokens=model.max_tokens,
-    )
+    """Instantiate the chat model from config via init_chat_model.
+
+    `temperature` is omitted when None: newer models (e.g. claude-opus-4-8)
+    reject the parameter outright, so it must be optional rather than defaulted.
+    """
+    kwargs: dict[str, Any] = {"max_tokens": model.max_tokens}
+    if model.temperature is not None:
+        kwargs["temperature"] = model.temperature
+    return init_chat_model(model.id, **kwargs)
 
 
 def build_agent(tools: Sequence[BaseTool], model: BaseChatModel) -> Any:

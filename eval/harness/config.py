@@ -15,7 +15,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 @dataclass(frozen=True)
 class ModelConfig:
     id: str
-    temperature: float = 0.0
+    # None omits the parameter entirely (some models, e.g. opus-4-8, reject it).
+    temperature: float | None = 0.0
     max_tokens: int = 4096
 
 
@@ -75,7 +76,10 @@ def load_config(path: str | Path | None = None) -> Config:
     return Config(
         model=ModelConfig(
             id=model["id"],
-            temperature=float(model.get("temperature", 0.0)),
+            temperature=(
+                None if model.get("temperature", 0.0) is None
+                else float(model["temperature"])
+            ),
             max_tokens=int(model.get("max_tokens", 4096)),
         ),
         emberd=EmberdConfig(

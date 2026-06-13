@@ -5,7 +5,9 @@
 model:
   # LangChain "provider:model" id passed to init_chat_model.
   id: "anthropic:claude-opus-4-8"
-  temperature: 0.0
+  # null omits the temperature parameter — claude-opus-4-8 rejects it. Set a
+  # float (e.g. 0.0) for models that support it.
+  temperature: null
   max_tokens: 4096
 
 # emberd daemon HTTP endpoint used by the sandbox variant.
