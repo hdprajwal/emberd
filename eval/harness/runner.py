@@ -12,7 +12,6 @@ import argparse
 import subprocess
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,6 +23,8 @@ from .agent import build_agent, build_model
 from .classify import classify_static, make_llm_classifier
 from .config import Config, load_config
 from .grade import grade, make_llm_judge
+from .results import TrialResult
+from .store import ResultStore, fingerprint, trial_key
 from .tasks import Task, load_task, load_tasks
 from .tools_bash import make_bash_tool
 from .tools_sandbox import EmberdClient, SandboxSession, make_run_code_tool
@@ -44,27 +45,6 @@ from .tripwires import (
     summarize,
 )
 from .types import CallLog
-
-
-@dataclass
-class TrialResult:
-    """In-memory summary of one trial, returned for the reporter to aggregate."""
-
-    task_id: str
-    category: str
-    variant: str
-    seed: int
-    pair_id: str
-    status: str
-    utility_verdict: str
-    containment: str
-    violations_total: int
-    violations_by_type: dict[str, int]
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    latency_ms: int
-    trajectory_path: Path
 
 
 def _now_iso() -> str:
@@ -410,40 +390,63 @@ def run_trial(
 def run_matrix(
     cfg: Config,
     run_id: str,
-    out_dir: Path,
+    store: ResultStore,
     variants: tuple[str, ...] = ("shell", "sandbox"),
     model: Any | None = None,
     llm_scoring: bool = True,
+    force: bool = False,
 ) -> list[TrialResult]:
-    """Run the full task × variant × trial matrix. Returns all TrialResults.
+    """Run the matrix, reusing cached trials, and return ALL stored results.
 
-    A single network sink is shared across the run for the shell variant (its log
-    is reset per trial inside run_trial). The sink is only created if the shell
-    variant is being run and Docker is available; on failure the shell trials
-    error out individually and the run continues (spec §9).
+    Only cells absent from the store (or whose fingerprint changed, or all cells
+    when `force`) are executed; the rest are reused. New/changed results are
+    merged into the store. The returned list is the WHOLE store, so the report
+    reflects every trial ever run — adding a task only runs the new cells but
+    updates the merged result.
+
+    A single network sink is shared across the run for the shell variant and is
+    only created when at least one shell cell actually needs to run.
     """
     tasks = load_tasks(cfg.root, cfg.tasks.glob)
     model = model or build_model(cfg.model)
-    results: list[TrialResult] = []
+    index = store.load()
 
-    sink_cm = _maybe_sink(cfg) if "shell" in variants else _null_cm()
+    # Plan the work first so we only boot the sink if a shell cell needs running.
+    plan: list[tuple[Task, str, int, str, str, TrialResult | None]] = []
+    need_sink = False
+    for task in tasks:
+        for variant in variants:
+            for seed in range(cfg.tasks.trials):
+                key = trial_key(task.id, variant, seed)
+                fp = fingerprint(task, variant, seed, cfg.model)
+                cached = None if force else store.cached(index, key, fp)
+                plan.append((task, variant, seed, key, fp, cached))
+                if cached is None and variant == "shell":
+                    need_sink = True
+
+    ran = 0
+    sink_cm = _maybe_sink(cfg) if need_sink else _null_cm()
     with sink_cm as sink:
-        for task in tasks:
-            for variant in variants:
-                for seed in range(cfg.tasks.trials):
-                    log_line = f"[{run_id}] {task.id} · {variant} · seed {seed}"
-                    print(log_line, flush=True)
-                    use_sink = sink if variant == "shell" else None
-                    try:
-                        result = run_trial(
-                            cfg, task, variant, seed, run_id, out_dir,
-                            model=model, sink=use_sink, llm_scoring=llm_scoring,
-                        )
-                    except Exception as e:  # never let one trial kill the matrix
-                        print(f"  ! trial crashed: {e}", flush=True)
-                        result = _errored_result(task, variant, seed, out_dir)
-                    results.append(result)
-    return results
+        for task, variant, seed, key, fp, cached in plan:
+            if cached is not None:
+                print(f"[{run_id}] {key} · cached", flush=True)
+                continue
+            print(f"[{run_id}] {key} · running", flush=True)
+            use_sink = sink if variant == "shell" else None
+            try:
+                result = run_trial(
+                    cfg, task, variant, seed, run_id, store.dir,
+                    model=model, sink=use_sink, llm_scoring=llm_scoring,
+                )
+            except Exception as e:  # never let one trial kill the matrix
+                print(f"  ! trial crashed: {e}", flush=True)
+                result = _errored_result(task, variant, seed, store.dir)
+            store.put(index, key, fp, result)
+            ran += 1
+
+    store.save(index)
+    print(f"[{run_id}] {ran} trial(s) ran, {len(plan) - ran} reused from cache", flush=True)
+    return store.all_results(index)
 
 
 @contextmanager

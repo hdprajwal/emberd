@@ -17,7 +17,7 @@ from .tasks import CATEGORIES
 from .tripwires import TRIPWIRE_KINDS
 
 if TYPE_CHECKING:
-    from .runner import TrialResult
+    from .results import TrialResult
 
 
 CAVEAT = (

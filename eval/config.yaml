@@ -36,3 +36,8 @@ budget:
 
 # Output.
 results_dir: "results"
+
+# Stable, accumulating results store. Re-runs only execute trials not already
+# here (unless --force). The merged summary.md / scoreboard.csv are regenerated
+# here every run. Set an absolute path to expose it to other folders/tools.
+store_dir: "results/store"

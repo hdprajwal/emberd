@@ -52,8 +52,16 @@ class Config:
     tasks: TasksConfig
     budget: BudgetConfig
     results_dir: str = "results"
+    # Stable, accumulating results store (the "accessible from outside" location).
+    # Relative paths resolve against `root`; an absolute path is used as-is.
+    store_dir: str = "results/store"
     # Directory the config was loaded from; paths in the config resolve against it.
     root: Path = field(default=Path.cwd())
+
+    @property
+    def store_path(self) -> Path:
+        p = Path(self.store_dir)
+        return p if p.is_absolute() else self.root / p
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -99,5 +107,6 @@ def load_config(path: str | Path | None = None) -> Config:
             max_seconds=int(budget.get("max_seconds", 180)),
         ),
         results_dir=raw.get("results_dir", "results"),
+        store_dir=raw.get("store_dir", "results/store"),
         root=cfg_path.resolve().parent,
     )
