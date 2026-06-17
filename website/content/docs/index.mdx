@@ -6,7 +6,7 @@ description: What emberd is, what it isn't, and how the pieces fit together.
 **emberd** is a Firecracker-based sandboxing runtime for executing AI-agent tool
 calls inside isolated microVMs. It's a local-first, open-source take on
 E2B / Modal-style sandboxes: create a sandbox, run code inside it, collect the
-output, then destroy it — in real hardware-virtualized isolation.
+output, then destroy it, all in real hardware-virtualized isolation.
 
 ```bash
 # Create a sandbox (boots a microVM), run code, tear it down.
@@ -23,7 +23,7 @@ curl -X DELETE localhost:7777/sandboxes/sb_a1b2c3d4e5f6
 ## What emberd is
 
 - A single-machine daemon for short-lived, isolated code execution.
-- A KVM / Firecracker microVM runtime — **not** a container wrapper.
+- A KVM / Firecracker microVM runtime, **not** a container wrapper.
 - A small HTTP API for sandbox **create**, **exec**, and **destroy**.
 - A foundation for fast startup via Firecracker snapshot restore (planned).
 
@@ -31,7 +31,7 @@ curl -X DELETE localhost:7777/sandboxes/sb_a1b2c3d4e5f6
 
 - Not a Docker replacement. Containers share a kernel with the host; emberd uses
   KVM virtualization, so the guest runs its own kernel.
-- Not a fleet orchestrator or serverless platform — it's one daemon on one box.
+- Not a fleet orchestrator or serverless platform: it is one daemon on one box.
 - Not tied to Python long-term, though Python is the first language pack.
 - Not designed for persistent storage or cross-sandbox communication.
 
@@ -39,7 +39,7 @@ curl -X DELETE localhost:7777/sandboxes/sb_a1b2c3d4e5f6
 
 A container shares the host kernel; a kernel bug or a container escape is a host
 compromise. A Firecracker microVM gives each sandbox its own kernel behind a KVM
-boundary — the same primitive AWS Lambda, Fly Machines, Modal, and E2B use to run
+boundary, the same primitive AWS Lambda, Fly Machines, Modal, and E2B use to run
 untrusted code. The trade is that it's Linux + KVM only and needs a separate
 `firecracker` binary, which is fine for a runtime that is Linux-only by intent.
 
@@ -61,7 +61,7 @@ untrusted code. The trade is that it's Linux + KVM only and needs a separate
 - The **daemon** (`emberd`) owns the HTTP API and the lifecycle of each microVM.
 - **`emberd-init`** is PID 1 inside the guest; it serves a tiny control protocol
   over vsock and runs submitted code.
-- There is **no network device** inside a sandbox in v0.1 — even the control
+- There is **no network device** inside a sandbox in v0.1; even the control
   channel is vsock, not IP.
 
 ## Where to go next

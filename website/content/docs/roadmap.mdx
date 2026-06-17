@@ -14,13 +14,13 @@ description: What works today, what's next, and the smaller follow-ups on deck.
 - `language_pack` selects the rootfs **and** interpreter; unknown packs are
   rejected.
 - `create` blocks on a vsock **readiness probe**, so a returned sandbox is
-  immediately usable — `exec` right after `create` no longer races the boot.
+  immediately usable: `exec` right after `create` no longer races the boot.
 - `emberd-init` runs as **PID 1** and reaps orphaned children, so a workload that
   double-forks doesn't leak zombies for the life of the microVM.
 
 <Callout type="info">
   Verified end to end: `print(6*7)` → `42`, exit-code propagation, stderr capture,
-  stdin piping, and timeouts firing — all through real microVMs.
+  stdin piping, and timeouts firing, all through real microVMs.
 </Callout>
 
 ## Next milestones
@@ -32,16 +32,16 @@ description: What works today, what's next, and the smaller follow-ups on deck.
    `mksquashfs`/`squashfs-tools`, absent on the reference dev host.)
 2. **Hardening.** Run under the Firecracker **jailer**, add **seccomp** filters,
    and enforce per-sandbox resource limits (CPU, memory, wall-clock, pids). The
-   aggressiveness depends on the threat model — an
+   aggressiveness depends on the threat model; this is an
    [open question](/docs/design-notes).
 3. **Snapshot restore (v0.2).** Pre-warm a paused VM per pack, snapshot memory +
-   state, and restore-on-create with a fresh tmpfs overlay — the path to
+   state, and restore-on-create with a fresh tmpfs overlay, the path to
    single-digit-millisecond acquire times.
 
 ## Smaller follow-ups on deck
 
 - **Manager/API unit tests** behind a fake `firecracker` binary.
-- **Opt-in egress** — per-sandbox network allowlist (TAP + iptables).
+- **Opt-in egress:** per-sandbox network allowlist (TAP + iptables).
 
 ## Further out
 

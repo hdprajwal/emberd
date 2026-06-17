@@ -1,6 +1,6 @@
 ---
 title: API Reference
-description: The three HTTP endpoints — create, exec, destroy — with request and response shapes and status codes.
+description: The three HTTP endpoints (create, exec, destroy) with request and response shapes and status codes.
 ---
 
 The daemon listens on `127.0.0.1:7777` by default (override with `--addr`). All
@@ -45,7 +45,7 @@ curl -X POST localhost:7777/sandboxes -d '{"language_pack":"python"}'
 ```
 
 <Callout type="info">
-  `201` means the VMM started and the VM is booting — not that the guest agent is
+  `201` means the VMM started and the VM is booting, not that the guest agent is
   ready to serve exec yet. See the note under `exec` below.
 </Callout>
 
@@ -92,7 +92,7 @@ Run code inside an existing sandbox and return its output.
 }
 ```
 
-- A **non-zero `exit_code` is a normal `200`** — your program ran and exited
+- A **non-zero `exit_code` is a normal `200`:** your program ran and exited
   non-zero. It is not an HTTP error.
 - `error` is non-empty only when the guest agent failed to *launch* the
   interpreter (e.g. binary not found) or the run timed out. `error` is omitted

@@ -26,8 +26,8 @@ Packs: map[string]Pack{
 }
 ```
 
-Both default packs currently **share the verification Ubuntu squashfs** — only the
-interpreter differs. That's enough to prove the abstraction end to end:
+Both default packs currently **share the verification Ubuntu squashfs**, with only the
+interpreter differing. That's enough to prove the abstraction end to end:
 
 ```bash
 emberctl exec <python-id> "print(6*7)"        # → 42
@@ -58,9 +58,9 @@ absent it falls back to the `-interpreter` flag default (`python3`).
 
 This was chosen over two alternatives:
 
-- **Baking the interpreter into the image** — would couple one rootfs to one
+- **Baking the interpreter into the image:** would couple one rootfs to one
   interpreter, but right now both packs reuse one rootfs.
-- **Passing the interpreter per exec request** — it's a property of the pack, not
+- **Passing the interpreter per exec request:** it's a property of the pack, not
   of an individual call.
 
 ## Adding a real, purpose-built pack
@@ -74,7 +74,7 @@ genuine minimal Python pack:
 
 <Callout type="warn">
   Building a real pack image needs `mksquashfs` (the `squashfs-tools` package),
-  which isn't present on the reference dev host — so purpose-built per-language
+  which isn't present on the reference dev host, so purpose-built per-language
   images are a [roadmap](/docs/roadmap) item. The selection logic and
   interpreter-threading are complete and exercised today via the two-interpreter,
   one-rootfs setup above.

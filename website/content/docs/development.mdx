@@ -41,14 +41,14 @@ go test ./...
 
 Current coverage:
 
-- **`pkg/proto`** — framing round-trip, oversize-length rejection, and the
+- **`pkg/proto`:** framing round-trip, oversize-length rejection, and the
   `DialGuest` hybrid-vsock handshake against a fake host socket.
-- **`cmd/emberd-init`** — `runExec` for success, stdin, non-zero exit, and timeout
+- **`cmd/emberd-init`:** `runExec` for success, stdin, non-zero exit, and timeout
   (runs against the host's `python3`).
 
 The Firecracker manager and the HTTP layer are exercised end-to-end via
 `scripts/emberctl.sh test` rather than unit tests (booting a real VM in a unit
-test isn't practical yet — a fake-`firecracker` harness is a planned follow-up).
+test isn't practical yet; a fake-`firecracker` harness is a planned follow-up).
 
 ## Host verification (optional)
 
@@ -80,14 +80,14 @@ timeout 15 firecracker --no-api --config-file vmconfig.json < /dev/null
 ```
 
 Expect kernel boot messages and then a busybox prompt. The CI initramfs
-intentionally drops to busybox rather than chaining into Ubuntu — that's expected,
+intentionally drops to busybox rather than chaining into Ubuntu, which is expected,
 and exactly why emberd ships its own initramfs.
 
 ## Verifying the guest kernel's config
 
 emberd relies on several kernel options being built into the guest kernel
 (`SQUASHFS`, `OVERLAY_FS`, `DEVTMPFS`, `TMPFS`, `VIRTIO_BLK`, `VSOCKETS`,
-`VIRTIO_VSOCKETS`). If you swap kernels, confirm they're present — the stock CI
+`VIRTIO_VSOCKETS`). If you swap kernels, confirm they're present; the stock CI
 kernel has all of them, verified by extracting its embedded `IKCONFIG`.
 
 ## Conventions

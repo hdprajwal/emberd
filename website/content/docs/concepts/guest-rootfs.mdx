@@ -3,7 +3,7 @@ title: The Guest Rootfs
 description: The custom initramfs, the overlayfs root, and the initramfs-style switch_root that emberd-init performs as PID 1.
 ---
 
-When a sandbox boots, the kernel runs emberd's own initramfs — a tiny cpio archive
+When a sandbox boots, the kernel runs emberd's own initramfs, a tiny cpio archive
 whose `/init` is a statically-linked `emberd-init`. As PID 1, that binary builds
 the real root filesystem and then serves the [control plane](/docs/concepts/control-plane).
 
@@ -18,7 +18,7 @@ mkdir -p "$STAGE"/{proc,sys,dev,newroot,tmp}   # mountpoints emberd-init needs
 ( cd "$STAGE" && find . | cpio --create --format=newc ) > emberd-initramfs.cpio
 ```
 
-Building with `CGO_ENABLED=0` means the binary is fully static — the initramfs
+Building with `CGO_ENABLED=0` means the binary is fully static, so the initramfs
 carries no libc, no shell, nothing but `/init` and a handful of empty
 mountpoints (~2.5 MiB total). Everything else comes from the language pack.
 
@@ -27,9 +27,9 @@ mountpoints (~2.5 MiB total). Everything else comes from the language pack.
 The architecture wants a writable root without mutating the immutable base image,
 so `emberd-init` assembles an **overlayfs**:
 
-- **lower** — the language-pack squashfs, mounted read-only.
-- **upper + work** — a fresh tmpfs (per-VM, lives in RAM).
-- **merged** — the overlay of the two; this becomes the new root.
+- **lower:** the language-pack squashfs, mounted read-only.
+- **upper + work:** a fresh tmpfs (per-VM, lives in RAM).
+- **merged:** the overlay of the two; this becomes the new root.
 
 Writes land in the tmpfs upper; the squashfs is never touched and its pages are
 shareable across sandboxes. Reset semantics are trivial: the tmpfs dies with the
@@ -47,7 +47,7 @@ VM.
 the same binary skip it):
 
 1. Mount `proc` on `/proc`, **devtmpfs** on `/dev` (this is what makes `/dev/vda`
-   appear), and `sysfs` on `/sys` — all inside the initramfs.
+   appear), and `sysfs` on `/sys`, all inside the initramfs.
 2. Mount the squashfs (`/dev/vda`) read-only at `/lower`.
 3. Mount a tmpfs at `/overlay`; create `upper/` and `work/` on it.
 4. `mount -t overlay` with `lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work`
@@ -79,7 +79,7 @@ syscall.Chdir("/")
 Moving the `/proc`, `/dev`, `/sys` submounts into `/newroot` *before* the final
 `MS_MOVE` means they ride along when the whole subtree relocates to `/`.
 
-You can confirm it worked from inside a running sandbox — `/proc/mounts` shows:
+You can confirm it worked from inside a running sandbox; `/proc/mounts` shows:
 
 ```
 overlay / overlay rw,relatime,lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work 0 0
@@ -91,12 +91,12 @@ overlay / overlay rw,relatime,lowerdir=/lower,upperdir=/overlay/upper,workdir=/o
 
 The guest kernel needs `SQUASHFS`, `OVERLAY_FS`, `DEVTMPFS`, `TMPFS`, and
 `VIRTIO_BLK` (plus the vsock options from the control-plane page). The Firecracker
-CI kernel has all of them built in, verified by extracting its embedded config —
+CI kernel has all of them built in, verified by extracting its embedded config,
 which is why emberd boots on the stock kernel with no rebuild.
 
 <Callout type="info">
   The kernel boot args still include `panic=1`, so if `emberd-init` ever exits or
-  the bootstrap fails, the guest panics and the VM dies — which is the correct
+  the bootstrap fails, the guest panics and the VM dies, which is the correct
   outcome for a sandbox whose agent is gone. The VM stays alive purely because PID
   1 (`emberd-init`) blocks forever in its vsock accept loop; nothing on the host
   needs to hold the VMM's stdin open (it's wired to `/dev/null`).

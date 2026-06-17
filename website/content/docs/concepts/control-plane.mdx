@@ -3,7 +3,7 @@ title: The vsock Control Plane
 description: The host↔guest wire protocol, the Firecracker hybrid-vsock handshake, and the raw-fd transport in the guest.
 ---
 
-All host↔guest traffic — exec requests and their results — travels over a
+All host↔guest traffic (exec requests and their results) travels over a
 **virtio-vsock** device, never an IP network. This keeps the "no network"
 guarantee honest: a v0.1 sandbox has no NIC at all, yet the daemon can still talk
 to it. The protocol lives in `pkg/proto`, the one package shared by the daemon and
@@ -65,7 +65,7 @@ The guest binds vsock port **1024** (`proto.GuestPort`).
 `VMADDR_CID_ANY:1024`, and accepts connections. Each accepted connection is
 handled by reading one `ExecRequest`, running it, and writing one `ExecResult`.
 
-The catch: **Go's `net.FileConn` rejects vsock file descriptors** — wrapping an
+The catch: **Go's `net.FileConn` rejects vsock file descriptors.** Wrapping an
 accepted `AF_VSOCK` fd fails with `getsockname: address family not supported`. So
 the guest reads and writes the raw fd directly through a tiny adapter:
 
@@ -82,7 +82,7 @@ func (c *vsockConn) Close() error                { return unix.Close(c.fd) }
 uses `net.Dial` as usual.
 
 <Callout type="info">
-  This was found the honest way — the first end-to-end attempt logged
+  This was found the honest way: the first end-to-end attempt logged
   `wrap vsock conn: ... address family not supported` on every connection until
   the raw-fd adapter replaced `net.FileConn`.
 </Callout>

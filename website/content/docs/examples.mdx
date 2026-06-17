@@ -1,0 +1,54 @@
+---
+title: Examples
+description: Runnable examples showing how to use emberd, from basic API calls to wiring it into an OpenAI agent.
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Each example lives in the [`examples/`](https://github.com/hdprajwal/emberd/tree/main/examples) directory of the repo and is fully self-contained. Clone the repo, start emberd, then run any example directly.
+
+```bash
+git clone https://github.com/hdprajwal/emberd
+cd emberd
+./bin/emberd   # daemon must be running before any example
+```
+
+<Cards>
+  <Card
+    title="01: basic-exec"
+    description="The smallest complete program: create a sandbox, execute Python code, print the result, destroy the sandbox. Both a Python script and a curl/jq shell version."
+    href="https://github.com/hdprajwal/emberd/tree/main/examples/01-basic-exec"
+  />
+  <Card
+    title="02: shell-exec"
+    description="Use the shell language pack to run POSIX shell commands inside a sandbox: uname, ps, df, and more. Both Python and curl versions."
+    href="https://github.com/hdprajwal/emberd/tree/main/examples/02-shell-exec"
+  />
+  <Card
+    title="03: state-persistence"
+    description="Filesystem writes in one exec call survive into the next. Three sequential execs on one sandbox: generate data, compute statistics, print a report."
+    href="https://github.com/hdprajwal/emberd/tree/main/examples/03-state-persistence"
+  />
+  <Card
+    title="04: error-handling"
+    description="How to handle syntax errors, runtime exceptions, non-zero exit codes, mixed stdout/stderr, and timeouts. A non-zero exit_code is never an HTTP error."
+    href="https://github.com/hdprajwal/emberd/tree/main/examples/04-error-handling"
+  />
+  <Card
+    title="05: openai-agent"
+    description="Wire emberd into a GPT-4o tool-calling agent. The model gets an execute_code tool backed by a real Firecracker microVM and reasons over the output."
+    href="https://github.com/hdprajwal/emberd/tree/main/examples/05-openai-agent"
+  />
+</Cards>
+
+## Prerequisites
+
+Examples 01-04 use only the Python standard library. Example 05 uses `uv` and manages its own dependencies via `pyproject.toml`.
+
+The shell examples (`run.sh`) need `curl` and `jq`.
+
+Override the daemon address with the `EMBERD_ADDR` environment variable (default `127.0.0.1:7777`):
+
+```bash
+EMBERD_ADDR=127.0.0.1:8888 python examples/01-basic-exec/main.py
+```

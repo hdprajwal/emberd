@@ -17,7 +17,7 @@ microVM lifecycle, and a guest agent that runs code inside each VM.
 | **Control protocol** | `pkg/proto` | The length-prefixed-JSON wire format shared by host and guest. |
 | **Guest initramfs** | `rootfs/build.sh` | A cpio archive whose `/init` is a static `emberd-init`. |
 
-The daemon and guest agent share exactly one package — `pkg/proto` — which keeps
+The daemon and guest agent share exactly one package, `pkg/proto`, which keeps
 the contract between them explicit and small.
 
 ## How a request flows
@@ -39,7 +39,7 @@ the vsock socket path.
 - **Cold boot today.** Create boots a fresh VM: kernel + custom initramfs + a
   read-only rootfs drive. Snapshot restore (sub-100ms) is the v0.2 target.
 - **vsock control plane.** Host ↔ guest traffic (exec requests, output) goes over
-  a virtio-vsock device, not a NIC. "No network" really means none — including
+  a virtio-vsock device, not a NIC. "No network" really means none, including
   for control.
 - **Read-only base + tmpfs overlay.** The language pack is an immutable squashfs;
   each sandbox layers a per-VM tmpfs on top via overlayfs. Base pages are shared,
@@ -49,7 +49,7 @@ See [Concepts](/docs/concepts) for the detail behind each of these.
 
 ## Sandbox identity
 
-A sandbox ID looks like `sb_a1b2c3d4e5f6` — an `sb_` prefix plus 6 random bytes
+A sandbox ID looks like `sb_a1b2c3d4e5f6`, an `sb_` prefix plus 6 random bytes
 hex-encoded. Firecracker's instance `--id` only accepts `[A-Za-z0-9-]`, so the
 daemon passes a hyphen-sanitized form (`sb-a1b2c3d4e5f6`) to the VMM while keeping
 the underscore form as the public/API identity. The two never need to match.
@@ -70,12 +70,12 @@ The directory is created on `Create` and removed on `Delete`.
 ## Networking
 
 - **v0.1:** no network access inside sandboxes. No TAP, no DNS, no host loopback.
-- **v0.2+:** opt-in per-sandbox egress allowlist — likely a host TAP device plus
+- **v0.2+:** opt-in per-sandbox egress allowlist, likely a host TAP device plus
   iptables rules limiting destinations.
 
 ## Non-goals
 
-- **Persistent storage** across sandbox lifetimes — use the host.
-- **Cross-sandbox communication** — each sandbox is sealed by design.
-- **Built-in auth / multi-tenancy** — assume the daemon is reached only on
+- **Persistent storage** across sandbox lifetimes: use the host.
+- **Cross-sandbox communication:** each sandbox is sealed by design.
+- **Built-in auth / multi-tenancy:** the daemon assumes a trusted caller on
   localhost or behind your own auth layer.

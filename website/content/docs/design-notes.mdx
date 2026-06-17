@@ -1,6 +1,6 @@
 ---
 title: Design Notes
-description: The locked-in decisions and the trade-offs behind them — a summary of the running design log.
+description: "The locked-in decisions and the trade-offs behind them: a summary of the running design log."
 ---
 
 emberd keeps a running design log in `docs/implementation-notes.html` (decisions,
@@ -14,7 +14,7 @@ decisions that shape the system today.
 | Isolation primitive | Firecracker microVM | Real KVM isolation; the primitive Lambda/Fly/Modal/E2B use. Credible path to &lt;100ms via snapshots. |
 | Language | Go + `firecracker-go-sdk` | Mature AWS-maintained SDK; fast path to v0.1; approachable for contributors. |
 | API | HTTP REST, `127.0.0.1:7777` | Simple, debuggable with curl, no codegen. gRPC unlikely. |
-| Rootfs | read-only squashfs + tmpfs overlay | Shared base pages, trivial reset, smaller snapshots — the Modal/E2B pattern. |
+| Rootfs | read-only squashfs + tmpfs overlay | Shared base pages, trivial reset, smaller snapshots (the Modal/E2B pattern). |
 | Control plane | vsock, not virtual networking | Keeps "no network" honest; no IP stack needed in the guest for control. |
 | Wire format | length-prefixed JSON | Tiny dependency surface, debuggable, matches the REST shapes. |
 | First language pack | Python | Dominant target for agent tool calls. |
@@ -27,7 +27,7 @@ decisions that shape the system today.
   but an unambiguously stronger boundary and a better cold-start story. emberd is
   Linux-only by intent, so the portability gVisor would buy doesn't matter.
 - **Snapshot restore vs cold boot.** v0.1 cold-boots (~125ms VMM + rootfs init +
-  interpreter warmup). Snapshot restore (5–30ms) is the only credible path to
+  interpreter warmup). Snapshot restore (5-30ms) is the only credible path to
   sub-100ms and is the v0.2 target; the cost is large per-pack snapshots that need
   versioning.
 - **Per-sandbox VM vs warm pool.** Per-sandbox is the correct, simplest baseline.

@@ -1,11 +1,11 @@
 ---
 title: CLI & Scripts
-description: serve.sh to run the daemon and emberctl.sh to drive it — commands, the test harness, and environment.
+description: "serve.sh to run the daemon and emberctl.sh to drive it: commands, the test harness, and environment."
 ---
 
 Two scripts in `scripts/` make local development and testing one-liners.
 
-## `serve.sh` — build and run the daemon
+## `serve.sh`: build and run the daemon
 
 Builds `bin/emberd` and `bin/emberd-init`, then runs the daemon in the foreground.
 
@@ -19,12 +19,12 @@ It rebuilds every time, which avoids the classic "I changed the manager but ran 
 stale `bin/emberd`" trap. Ctrl-C stops it.
 
 <Callout type="info">
-  `serve.sh` does **not** rebuild the guest initramfs — if you change
+  `serve.sh` does **not** rebuild the guest initramfs; if you change
   `cmd/emberd-init`, re-run `./rootfs/build.sh` too, since the agent runs from the
   packed initramfs, not from `bin/emberd-init`.
 </Callout>
 
-## `emberctl.sh` — drive a running daemon
+## `emberctl.sh`: drive a running daemon
 
 A thin curl wrapper. Honors `ADDR` (default `127.0.0.1:7777`).
 
@@ -55,7 +55,7 @@ to start it with `serve.sh`.
 ## The `test` harness
 
 `emberctl.sh test` runs the full lifecycle against a live daemon and asserts each
-step — useful as a smoke test after changes:
+step, useful as a smoke test after changes:
 
 ```
 ==> create

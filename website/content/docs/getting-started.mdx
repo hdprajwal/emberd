@@ -16,7 +16,7 @@ in. It assumes `x86_64`; adjust the artifact names for other architectures.
 - `cpio` and `gzip` (to build the guest initramfs). `curl` for fetching artifacts.
 
 <Callout type="warn">
-  emberd is Linux + KVM only. There is no macOS/Windows path — Firecracker needs
+  emberd is Linux + KVM only. There is no macOS/Windows path: Firecracker needs
   KVM. WSL2 may work if it exposes `/dev/kvm`, but it's untested.
 </Callout>
 
@@ -79,7 +79,7 @@ curl -fsSL -o ubuntu-24.04.squashfs "$base/ubuntu-24.04.squashfs"
 ```
 
 <Callout type="info">
-  You do **not** need the CI `initramfs.cpio` for running emberd — it boots its
+  You do **not** need the CI `initramfs.cpio` for running emberd: it boots its
   own initramfs (next step). The CI one is only useful for the host-boot smoke
   test in [Development](/docs/development).
 </Callout>
@@ -117,7 +117,7 @@ libc inside the initramfs) and packs it as `/init`. See
 ```
 
 On startup the daemon stats the firecracker binary, kernel, initramfs, and every
-language pack's rootfs, and **exits with a clear error if any are missing** — a
+language pack's rootfs, and **exits with a clear error if any are missing.** A
 sandbox runtime that can't boot sandboxes has no useful degraded mode.
 
 </Step>
@@ -129,7 +129,7 @@ sandbox runtime that can't boot sandboxes has no useful degraded mode.
 With the daemon running, from another terminal:
 
 ```bash
-# 1. Create a sandbox — this boots a real microVM.
+# 1. Create a sandbox (boots a real microVM).
 ID=$(curl -s -X POST localhost:7777/sandboxes -d '{"language_pack":"python"}' \
   | grep -o 'sb_[a-f0-9]*')
 echo "$ID"
@@ -160,12 +160,12 @@ See [CLI & scripts](/docs/cli) for the full `emberctl` surface.
 
 ## Troubleshooting
 
-- **`required artifact missing: ...`** — a path the daemon expects doesn't exist.
+- **`required artifact missing: ...`:** a path the daemon expects doesn't exist.
   Re-check the download/build steps; override paths via `firecracker.Config` if
   you put them elsewhere.
-- **`permission denied` on `/dev/kvm`** — you're not in the `kvm` group (or
+- **`permission denied` on `/dev/kvm`:** you're not in the `kvm` group (or
   haven't re-logged in).
-- **exec returns `"executable file not found"`** — the pack's interpreter isn't
+- **exec returns `"executable file not found"`:** the pack's interpreter isn't
   present in that rootfs. The default packs assume the Ubuntu squashfs.
-- **VM seems to boot but exec hangs/times out** — inspect the guest console log
+- **VM seems to boot but exec hangs/times out:** inspect the guest console log
   at `${TMPDIR:-/tmp}/emberd/<id>/vm.log`.
