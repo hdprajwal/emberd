@@ -47,9 +47,15 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDelete)
 }
 
+const (
+	maxCreateBody = 4 << 10  // 4 KiB — language_pack name only
+	maxExecBody   = 1 << 20  // 1 MiB — code + stdin
+)
+
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req CreateSandboxRequest
 	if r.ContentLength != 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxCreateBody)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
@@ -74,6 +80,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxExecBody)
 	var req ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
