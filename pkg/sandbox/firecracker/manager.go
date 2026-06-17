@@ -158,7 +158,7 @@ func New(cfg Config) (*Manager, error) {
 			return nil, fmt.Errorf("required artifact missing: %s: %w", p, err)
 		}
 	}
-	if err := os.MkdirAll(cfg.WorkDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create work dir: %w", err)
 	}
 
@@ -187,13 +187,13 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	}
 
 	dir := filepath.Join(m.cfg.WorkDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create sandbox dir: %w", err)
 	}
 
 	cleanup := func() { _ = os.RemoveAll(dir) }
 
-	logFile, err := os.Create(filepath.Join(dir, "vm.log"))
+	logFile, err := os.OpenFile(filepath.Join(dir, "vm.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("create vm log: %w", err)
