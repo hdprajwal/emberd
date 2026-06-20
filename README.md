@@ -1,5 +1,10 @@
 # emberd
 
+[![CI](https://github.com/hdprajwal/emberd/actions/workflows/ci.yml/badge.svg)](https://github.com/hdprajwal/emberd/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-emberd.hdprajwal.dev-blue)](https://emberd.hdprajwal.dev)
+
 Run code inside isolated microVMs with a single HTTP call.
 
 emberd is a local daemon that boots [Firecracker](https://firecracker-microvm.github.io/) microVMs on demand, runs code inside them, and tears them down. Think E2B or Modal, but self-hosted and open source. It is built for giving AI agents a safe place to execute code.
