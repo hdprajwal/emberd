@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -157,6 +158,33 @@ func (c *Config) withDefaults() error {
 		}
 	}
 	return nil
+}
+
+// Boot-path labels reported by Info. They name the fast-boot strategy a Create
+// takes under the resolved config. The set is intentionally small and stable so
+// downstream consumers (the bench env block) can rely on it.
+const (
+	// bootPathWarmPool: a warm pool is enabled, so Create pops a pre-warmed VM.
+	bootPathWarmPool = "warm-pool"
+	// bootPathSnapshotRestore: the pool is disabled but Create still restores
+	// from a template snapshot instead of a full cold boot.
+	bootPathSnapshotRestore = "snapshot-restore"
+	// bootPathColdBoot: neither pooling nor snapshot restore is in play, so a
+	// Create boots a fresh microVM. The current manager always maintains
+	// snapshots, so no resolved config reports this today; it is retained as the
+	// honest fallback label in the set.
+	bootPathColdBoot = "cold-boot"
+)
+
+// bootPath derives the fast-boot label for the resolved config. It reports the
+// configured intent — the path a Create takes in steady state — not a per-create
+// trace: under SkipWarmOnStart a snapshot may still be building on the very first
+// Create, but the intent is snapshot restore, so that is what is reported.
+func (c *Config) bootPath() string {
+	if c.PoolSize > 0 {
+		return bootPathWarmPool
+	}
+	return bootPathSnapshotRestore
 }
 
 // vm is a live microVM handle.
@@ -621,6 +649,26 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("stop vmm: %w", stopErr)
 	}
 	return nil
+}
+
+// Info reports the resolved sandbox configuration: the guest machine shape, the
+// fast-boot strategy a Create takes, the registered language packs, and the host
+// work directory. All values come from the Config after New applied defaults, so
+// they match what a Create actually produces. The pack list is sorted for a
+// stable response.
+func (m *Manager) Info() sandbox.Info {
+	packs := make([]string, 0, len(m.cfg.Packs))
+	for name := range m.cfg.Packs {
+		packs = append(packs, name)
+	}
+	sort.Strings(packs)
+	return sandbox.Info{
+		GuestRAMMiB: int(m.cfg.MemSizeMib),
+		GuestVCPUs:  int(m.cfg.VcpuCount),
+		BootPath:    m.cfg.bootPath(),
+		Packs:       packs,
+		WorkDir:     m.cfg.WorkDir,
+	}
 }
 
 // runRefiller is the single goroutine that keeps pools topped up. It blocks on
