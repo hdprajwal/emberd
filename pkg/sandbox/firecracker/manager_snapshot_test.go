@@ -17,10 +17,11 @@ import (
 
 // newIntegrationManager builds a Manager over the real verification artifacts
 // under ~/firecracker-verify with a single python pack, a fresh WorkDir, and a
-// SnapshotDir inside it. PoolSize is -1 (pools arrive in a later task). mutate,
-// if non-nil, tweaks the Config before New — e.g. to point several managers at a
-// shared SnapshotDir or to perturb KernelArgs. Cleanup tears down any still-live
-// VMs directly, since Close() does not exist yet.
+// SnapshotDir inside it. PoolSize is left at its default (3) so the warm pool is
+// live; a test that needs pool-off behaviour sets PoolSize: -1 via mutate.
+// mutate, if non-nil, tweaks the Config before New — e.g. to point several
+// managers at a shared SnapshotDir or to perturb KernelArgs. Cleanup calls
+// Close(), which drains the pool and deletes every still-live VM.
 func newIntegrationManager(t *testing.T, mutate func(*Config)) *Manager {
 	t.Helper()
 	home, err := os.UserHomeDir()
@@ -37,7 +38,6 @@ func newIntegrationManager(t *testing.T, mutate func(*Config)) *Manager {
 		},
 		WorkDir:     workDir,
 		SnapshotDir: filepath.Join(workDir, "snapshots"),
-		PoolSize:    -1,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -46,19 +46,7 @@ func newIntegrationManager(t *testing.T, mutate func(*Config)) *Manager {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() {
-		m.mu.Lock()
-		ids := make([]string, 0, len(m.vms))
-		for id := range m.vms {
-			ids = append(ids, id)
-		}
-		m.mu.Unlock()
-		for _, id := range ids {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = m.Delete(ctx, id)
-			cancel()
-		}
-	})
+	t.Cleanup(func() { _ = m.Close() })
 	return m
 }
 
@@ -86,7 +74,10 @@ func firecrackerProcsUnder(t *testing.T, dir string) int {
 // asserts a valid content-addressed snapshot lands on disk, no torn temp dir is
 // left behind, and the template hypervisor is gone.
 func TestCreateSnapshot(t *testing.T) {
-	m := newIntegrationManager(t, nil)
+	// Pool off: this test asserts zero firecracker processes survive snapshot
+	// creation, which is a check on the template teardown. Warm pooled VMs would
+	// be live firecracker processes under WorkDir and mask that signal.
+	m := newIntegrationManager(t, func(c *Config) { c.PoolSize = -1 })
 
 	hash, err := m.artifactHash("python")
 	if err != nil {
@@ -393,7 +384,11 @@ func TestCreateUsesRestore(t *testing.T) {
 // error. The > 300 ms latency proves the slow path actually ran, and the exec
 // proves the fallback VM is fully functional.
 func TestRestoreFallbackToColdBoot(t *testing.T) {
-	m := newIntegrationManager(t, nil)
+	// Pool off: a live pool would pre-restore VMs at New() (while the snapshot is
+	// still valid), so Create would pop a healthy pooled VM instead of taking the
+	// restore path this test corrupts. -1 forces Create straight to restore →
+	// cold-boot fallback.
+	m := newIntegrationManager(t, func(c *Config) { c.PoolSize = -1 })
 	ctx := context.Background()
 
 	m.snapshotMu.RLock()
@@ -502,7 +497,10 @@ func TestLazySnapshotBuild(t *testing.T) {
 // later task.
 func TestColdBootExec(t *testing.T) {
 	workDir := t.TempDir()
-	m, err := New(Config{WorkDir: workDir})
+	// Pool off: this test exercises the boot + vsock path directly and never calls
+	// Close(), so disabling the pool avoids pre-warming (and leaking) idle VMs and
+	// a refiller goroutine.
+	m, err := New(Config{WorkDir: workDir, PoolSize: -1})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -538,5 +536,116 @@ func TestColdBootExec(t *testing.T) {
 
 	if err := m.Delete(ctx, sb.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+}
+
+// TestPoolHit proves steady-state Create() is a pool pop, not a restore. With
+// PoolSize 2 and warm-on-start the pool holds two pre-restored VMs; two
+// consecutive Creates must each return in well under 50 ms (a channel receive,
+// far below even the ~20 ms restore) and each VM must actually run code.
+func TestPoolHit(t *testing.T) {
+	m := newIntegrationManager(t, func(c *Config) { c.PoolSize = 2 })
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		start := time.Now()
+		sb, err := m.Create(ctx, "python")
+		if err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+		latency := time.Since(start)
+		t.Logf("pool-hit create %d latency: %s", i, latency)
+		if latency >= 50*time.Millisecond {
+			t.Fatalf("Create %d took %s, want < 50ms (should be a pool pop)", i, latency)
+		}
+
+		res, err := m.Exec(ctx, sb.ID, proto.ExecRequest{Code: "print(6*7)"})
+		if err != nil {
+			t.Fatalf("Exec %d: %v", i, err)
+		}
+		if res.ExitCode != 0 || res.Stdout != "42\n" {
+			t.Fatalf("Create %d exec: exit=%d stdout=%q stderr=%q", i, res.ExitCode, res.Stdout, res.Stderr)
+		}
+
+		if err := m.Delete(ctx, sb.ID); err != nil {
+			t.Fatalf("Delete %d: %v", i, err)
+		}
+	}
+}
+
+// TestPoolRefill proves the background refiller replenishes a drained pool. Two
+// Creates empty the PoolSize-2 pool and each signal refillCh; the pool must
+// climb back to 2 within 30 s.
+func TestPoolRefill(t *testing.T) {
+	m := newIntegrationManager(t, func(c *Config) { c.PoolSize = 2 })
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 2; i++ {
+		sb, err := m.Create(ctx, "python")
+		if err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+		ids = append(ids, sb.ID)
+	}
+
+	// len() on a channel is a safe concurrent read against the refiller's pushes.
+	pool := m.pools["python"]
+	deadline := time.Now().Add(30 * time.Second)
+	for len(pool) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("pool did not refill to 2 within 30s (len=%d)", len(pool))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	for _, id := range ids {
+		if err := m.Delete(ctx, id); err != nil {
+			t.Fatalf("Delete %s: %v", id, err)
+		}
+	}
+}
+
+// TestCloseDrainsPool proves Close() leaves no Firecracker process behind. It
+// fills a PoolSize-2 pool, waits for the refiller to top it back up after one
+// live Create, then Close()s and asserts the pool channel is empty and no
+// firecracker process under this manager's WorkDir survives — covering both the
+// idle pooled VMs and the one live sandbox Close tears down.
+func TestCloseDrainsPool(t *testing.T) {
+	m := newIntegrationManager(t, func(c *Config) { c.PoolSize = 2 })
+	ctx := context.Background()
+
+	// One live sandbox in addition to the warm pool. Its Create pops a pooled VM
+	// and signals a refill.
+	if _, err := m.Create(ctx, "python"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Wait for the refiller to bring the pool back to full so Close has a fully
+	// populated pool to drain.
+	pool := m.pools["python"]
+	deadline := time.Now().Add(30 * time.Second)
+	for len(pool) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("pool did not refill to 2 before Close (len=%d)", len(pool))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if n := len(pool); n != 0 {
+		t.Fatalf("pool not drained after Close: len=%d", n)
+	}
+	// Every Firecracker process for this manager — pooled and live — must be gone.
+	if n := firecrackerProcsUnder(t, m.cfg.WorkDir); n != 0 {
+		t.Fatalf("expected 0 firecracker processes after Close, found %d", n)
+	}
+
+	// Close is idempotent: a second call (and the deferred t.Cleanup) must no-op.
+	if err := m.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }
