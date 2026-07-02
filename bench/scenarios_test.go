@@ -72,3 +72,27 @@ func TestStatsTableRendersGatedCells(t *testing.T) {
 		t.Errorf("statsTable with n=3 should render gated p95/p99 as \"—\":\n%s", table)
 	}
 }
+
+func TestVsockOverheadLineLabelsMsResolutionApproximate(t *testing.T) {
+	r := ExecPackResult{
+		API:             NewStats([]float64{10, 11, 12}),
+		Guest:           NewStats([]float64{9, 9, 9}),
+		GuestResolution: "ms",
+	}
+	line := vsockOverheadLine(r)
+	if !strings.Contains(line, "approximate") {
+		t.Errorf("vsockOverheadLine(ms) = %q, want it labeled approximate", line)
+	}
+}
+
+func TestVsockOverheadLineOmitsApproximateForUsResolution(t *testing.T) {
+	r := ExecPackResult{
+		API:             NewStats([]float64{10, 11, 12}),
+		Guest:           NewStats([]float64{9, 9, 9}),
+		GuestResolution: "us",
+	}
+	line := vsockOverheadLine(r)
+	if strings.Contains(line, "approximate") {
+		t.Errorf("vsockOverheadLine(us) = %q, want no approximate label", line)
+	}
+}

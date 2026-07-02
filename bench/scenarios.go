@@ -16,6 +16,7 @@ const settleDelay = 100 * time.Millisecond
 func init() {
 	registerScenario("cold-boot", runColdBoot)
 	registerScenario("ttfr", runTTFR)
+	registerScenario("exec", runExecScenario)
 }
 
 // timeMs returns the elapsed time since start in fractional milliseconds.
@@ -214,4 +215,114 @@ func runTTFR(rc *runContext) (ScenarioResult, error) {
 	}
 
 	return ScenarioResult{JSON: result, Markdown: md.String()}, nil
+}
+
+// ExecPackResult is one pack's warm-sandbox steady-state exec outcome
+// (bench-v2-spec.md §6.3, §9.4).
+type ExecPackResult struct {
+	API             Stats   `json:"api"`
+	Guest           Stats   `json:"guest"`
+	FirstExecMs     float64 `json:"first_exec_ms"`
+	GuestResolution string  `json:"guest_resolution"`
+}
+
+// ExecResult is the exec scenario's JSON payload, keyed by language pack.
+type ExecResult map[string]ExecPackResult
+
+// runExecScenario execs the hello payload rc.Config.ExecN times against one
+// warm sandbox per configured pack. The first exec is recorded separately
+// as the warmup-floor scalar and excluded from the steady-state
+// distribution (bench-v2-spec.md §4, §6.3).
+func runExecScenario(rc *runContext) (ScenarioResult, error) {
+	result := make(ExecResult, len(rc.Config.Packs))
+	var md strings.Builder
+	md.WriteString("## Exec (warm-sandbox steady-state)\n\n")
+	md.WriteString("One warm sandbox per pack; n execs of `hello`. The first exec is a separate warmup-floor ")
+	md.WriteString("scalar, excluded from the steady-state distribution (bench-v2-spec.md §4, §6.3).\n\n")
+
+	for _, pack := range rc.Config.Packs {
+		hello := HelloPayload(pack)
+
+		id, err := rc.Client.Create(rc.Ctx, pack)
+		if err != nil {
+			return ScenarioResult{}, fmt.Errorf("exec[%s]: create: %w", pack, err)
+		}
+
+		packResult, err := execWarmSandbox(rc, pack, id, hello, rc.Config.ExecN)
+		if err != nil {
+			_ = rc.Client.Delete(rc.Ctx, id) // best-effort cleanup; the exec error is what matters
+			return ScenarioResult{}, err
+		}
+		if err := rc.Client.Delete(rc.Ctx, id); err != nil {
+			return ScenarioResult{}, fmt.Errorf("exec[%s]: delete: %w", pack, err)
+		}
+		result[pack] = packResult
+
+		fmt.Fprintf(&md, "### %s\n\n", pack)
+		fmt.Fprintf(&md, "first exec (warmup floor): %s\n\n", FormatMs(packResult.FirstExecMs))
+		md.WriteString(statsTable([]statsRow{
+			{"api round-trip", packResult.API},
+			{"guest duration", packResult.Guest},
+		}))
+		md.WriteString("\n")
+		md.WriteString(vsockOverheadLine(packResult))
+	}
+
+	return ScenarioResult{JSON: result, Markdown: md.String()}, nil
+}
+
+// execWarmSandbox runs n execs of hello against the already-created sandbox
+// id, splitting off the first exec as the warmup scalar per §4: it captures
+// interpreter page-cache warmup and is excluded from the steady-state
+// distribution formed by the remaining n-1 samples.
+func execWarmSandbox(rc *runContext, pack, id string, hello Payload, n int) (ExecPackResult, error) {
+	if n < 1 {
+		return ExecPackResult{}, fmt.Errorf("exec[%s]: -exec must be >= 1, got %d", pack, n)
+	}
+
+	t0 := time.Now()
+	first, err := rc.Client.Exec(rc.Ctx, id, hello.Code, hello.Stdin, hello.TimeoutMs)
+	if err != nil {
+		return ExecPackResult{}, fmt.Errorf("exec[%s] iteration 0 (warmup): %w", pack, err)
+	}
+	firstExecMs := timeMs(t0)
+	if err := checkPayload(hello, 0, first); err != nil {
+		return ExecPackResult{}, fmt.Errorf("exec[%s]: %w", pack, err)
+	}
+
+	apiSamples := make([]float64, 0, n-1)
+	guestSamples := make([]float64, 0, n-1)
+	resolution := first.GuestResolution
+	for i := 1; i < n; i++ {
+		t := time.Now()
+		outcome, err := rc.Client.Exec(rc.Ctx, id, hello.Code, hello.Stdin, hello.TimeoutMs)
+		if err != nil {
+			return ExecPackResult{}, fmt.Errorf("exec[%s] iteration %d: %w", pack, i, err)
+		}
+		apiSamples = append(apiSamples, timeMs(t))
+		if err := checkPayload(hello, i, outcome); err != nil {
+			return ExecPackResult{}, fmt.Errorf("exec[%s]: %w", pack, err)
+		}
+		guestSamples = append(guestSamples, outcome.GuestDurationMs)
+		resolution = outcome.GuestResolution
+	}
+
+	return ExecPackResult{
+		API:             NewStats(apiSamples),
+		Guest:           NewStats(guestSamples),
+		FirstExecMs:     firstExecMs,
+		GuestResolution: resolution,
+	}, nil
+}
+
+// vsockOverheadLine renders the "API - guest" vsock-overhead derivation
+// (median of each series), labeled approximate whenever the guest duration
+// is only ms-resolution — comparing two ms-quantized values overstates the
+// derivation's precision (bench-v2-spec.md §6.3).
+func vsockOverheadLine(r ExecPackResult) string {
+	overhead := r.API.P50Ms - r.Guest.P50Ms
+	if r.GuestResolution == "us" {
+		return fmt.Sprintf("vsock overhead (api p50 − guest p50): %s\n", FormatMs(overhead))
+	}
+	return fmt.Sprintf("vsock overhead (api p50 − guest p50, **approximate** — guest resolution is ms): %s\n", FormatMs(overhead))
 }
