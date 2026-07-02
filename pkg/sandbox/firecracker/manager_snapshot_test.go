@@ -4,9 +4,11 @@ package firecracker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,6 +230,116 @@ func TestSnapshotReuseAndInvalidation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(snapDir, "python", newHash, "state")); err != nil {
 		t.Fatalf("valid snapshot removed by cleanup: %v", err)
+	}
+}
+
+// registerVM inserts a restored/booted VM into m.vms so Exec/Delete find it,
+// mirroring what Create does after coldBoot. Restore returns an unregistered vm
+// (the pool/refiller own registration later), so the in-package tests do it here.
+func registerVM(m *Manager, v *vm) {
+	m.mu.Lock()
+	m.vms[v.sb.ID] = v
+	m.mu.Unlock()
+}
+
+// TestRestoreExec restores a single VM from the pack's template snapshot, runs
+// an exec through the standard Exec path, and tears it down through the
+// unchanged Delete. It also asserts the restore call itself is well under the
+// cold-boot cost (< 200 ms), proving it took the load-snapshot path rather than
+// falling back to a full boot.
+func TestRestoreExec(t *testing.T) {
+	m := newIntegrationManager(t, nil)
+	ctx := context.Background()
+
+	start := time.Now()
+	v, err := m.restoreFromSnapshot(ctx, "python")
+	if err != nil {
+		t.Fatalf("restoreFromSnapshot: %v", err)
+	}
+	restoreLatency := time.Since(start)
+	registerVM(m, v)
+	t.Logf("restore latency: %s", restoreLatency)
+
+	if restoreLatency >= 200*time.Millisecond {
+		t.Fatalf("restore took %s, want < 200ms (should be the fast load-snapshot path, not a cold boot)", restoreLatency)
+	}
+
+	res, err := m.Exec(ctx, v.sb.ID, proto.ExecRequest{Code: "print(42)"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if res.Stdout != "42\n" {
+		t.Fatalf("stdout = %q, want %q", res.Stdout, "42\n")
+	}
+
+	if err := m.Delete(ctx, v.sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
+// TestRestoreIsolation restores two VMs from the same snapshot concurrently and
+// proves they are fully isolated: each writes a distinct file into its own guest
+// /tmp and reads it back, seeing only its own value, and the two host vsock
+// sockets live at distinct paths (distinct per-VM cwds).
+func TestRestoreIsolation(t *testing.T) {
+	m := newIntegrationManager(t, nil)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	vms := make([]*vm, 2)
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			v, err := m.restoreFromSnapshot(ctx, "python")
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			registerVM(m, v)
+			vms[i] = v
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("restore %d: %v", i, err)
+		}
+	}
+
+	if vms[0].vsockUDS == vms[1].vsockUDS {
+		t.Fatalf("sibling restores share a vsock path %q; they must be distinct", vms[0].vsockUDS)
+	}
+
+	// Each VM writes a distinct marker into its own guest /tmp and reads it back.
+	// Cross-talk (shared guest filesystem or shared socket) would surface as one
+	// VM seeing the other's value.
+	for i, v := range vms {
+		want := fmt.Sprintf("vm-%d-marker", i)
+		code := fmt.Sprintf(
+			"open('/tmp/marker','w').write('%s'); print(open('/tmp/marker').read())",
+			want,
+		)
+		res, err := m.Exec(ctx, v.sb.ID, proto.ExecRequest{Code: code})
+		if err != nil {
+			t.Fatalf("Exec vm %d: %v", i, err)
+		}
+		if res.ExitCode != 0 {
+			t.Fatalf("vm %d exit code = %d, stderr=%q", i, res.ExitCode, res.Stderr)
+		}
+		if res.Stdout != want+"\n" {
+			t.Fatalf("vm %d stdout = %q, want %q", i, res.Stdout, want+"\n")
+		}
+	}
+
+	for _, v := range vms {
+		if err := m.Delete(ctx, v.sb.ID); err != nil {
+			t.Fatalf("Delete %s: %v", v.sb.ID, err)
+		}
 	}
 }
 

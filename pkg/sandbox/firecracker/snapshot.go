@@ -8,9 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	fc "github.com/firecracker-microvm/firecracker-go-sdk"
+
 	"github.com/hdprajwal/emberd/pkg/proto"
+	"github.com/hdprajwal/emberd/pkg/sandbox"
 )
 
 // artifactHash returns the first 12 hex chars of a sha256 over everything that
@@ -205,4 +209,122 @@ func (m *Manager) createSnapshot(ctx context.Context, packName string) error {
 	}
 	m.snapshotMu.Unlock()
 	return nil
+}
+
+// restoreFromSnapshot loads packName's registered template snapshot into a fresh
+// microVM and returns its live handle, shaped identically to a cold-booted vm so
+// Exec and Delete need no special-casing. The returned vm is NOT registered in
+// m.vms — the caller (Create's acquire path, or a refiller) owns registration.
+//
+// Restore is the fast path: 15–30 ms vs ~400 ms for a cold boot, because the
+// guest's page cache and the listening emberd-init both survive in the memory
+// image, so waitReady converges in a probe or two instead of waiting out a full
+// kernel + userspace boot.
+//
+// Per the fast-boot spec's correction #2 the restore fc.Config carries only
+// SocketPath and VMID: fc.WithSnapshot swaps in the load-snapshot handler list,
+// and the snapshot state supplies the drives, the vsock device, and the machine
+// shape. The vsock device's path was baked in as the relative "v.sock", so the
+// restored socket binds inside this VM's own dir (cmd.Dir), giving every clone a
+// distinct host socket without an (impossible) post-restore vsock patch.
+func (m *Manager) restoreFromSnapshot(ctx context.Context, packName string) (*vm, error) {
+	m.snapshotMu.RLock()
+	snap, ok := m.snapshots[packName]
+	m.snapshotMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("restore %s: no snapshot registered", packName)
+	}
+
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+
+	dir := filepath.Join(m.cfg.WorkDir, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create sandbox dir: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+
+	logFile, err := os.OpenFile(filepath.Join(dir, "vm.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("create vm log: %w", err)
+	}
+
+	// The vsock UDS the host dials is dir/v.sock: the snapshot baked in the
+	// relative "v.sock", and cmd.Dir below pins this Firecracker process to dir,
+	// so the restored device rebinds there. Absolute join for host-side dialing.
+	vsockUDS := filepath.Join(dir, "v.sock")
+
+	// Only SocketPath and VMID — the load-snapshot handler list (installed by
+	// fc.WithSnapshot) restores drives, vsock, and machine shape from the state
+	// file, so passing them here would be redundant. SocketPath is per-VM and on
+	// the command line, never part of snapshot state.
+	socketPath := filepath.Join(dir, "fc.sock")
+	fcID := strings.ReplaceAll(id, "_", "-")
+	fcCfg := fc.Config{
+		SocketPath: socketPath,
+		VMID:       fcID,
+	}
+
+	// The microVM must outlive the restore request, so it gets its own context
+	// cancelled only on Delete, exactly like coldBoot.
+	vmCtx, cancel := context.WithCancel(context.Background())
+
+	// cmd.Dir pins the process to dir so the restored relative "v.sock" resolves
+	// to dir/v.sock — same mechanism coldBoot uses for its template.
+	cmd := fc.VMCommandBuilder{}.
+		WithBin(m.cfg.FirecrackerBin).
+		WithSocketPath(socketPath).
+		WithArgs([]string{"--id", fcID}).
+		WithStdout(logFile).
+		WithStderr(logFile).
+		Build(vmCtx)
+	cmd.Dir = dir
+
+	machine, err := fc.NewMachine(vmCtx, fcCfg,
+		fc.WithLogger(m.logger.WithField("sandbox", id)),
+		fc.WithProcessRunner(cmd),
+		fc.WithSnapshot(snap.memFile, snap.vmState, func(sc *fc.SnapshotConfig) {
+			// Resume the guest as part of the load so it is immediately runnable;
+			// the snapshot was taken paused, right after warm-up.
+			sc.ResumeVM = true
+		}),
+	)
+	if err != nil {
+		cancel()
+		logFile.Close()
+		cleanup()
+		return nil, fmt.Errorf("new machine (restore): %w", err)
+	}
+
+	if err := machine.Start(vmCtx); err != nil {
+		cancel()
+		logFile.Close()
+		cleanup()
+		return nil, fmt.Errorf("start machine (restore): %w", err)
+	}
+
+	// The guest's emberd-init was already listening when the snapshot was taken,
+	// so this converges in a probe or two rather than waiting out a boot.
+	if err := waitReady(ctx, vsockUDS, proto.GuestPort, m.cfg.BootTimeout); err != nil {
+		_ = machine.StopVMM()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = machine.Wait(stopCtx)
+		stopCancel()
+		cancel()
+		logFile.Close()
+		cleanup()
+		return nil, fmt.Errorf("restore %s: %w", id, err)
+	}
+
+	return &vm{
+		sb:        &sandbox.Sandbox{ID: id, LanguagePack: packName},
+		machine:   machine,
+		cancel:    cancel,
+		dir:       dir,
+		vsockUDS:  vsockUDS,
+		vsockPort: proto.GuestPort,
+	}, nil
 }
