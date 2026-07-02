@@ -23,11 +23,17 @@ type ExecRequest struct {
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
 }
 
+// ExecResponse is the JSON body returned by the exec handler. DurationMs and
+// DurationUs both report the guest-measured exec wall time (whole milliseconds
+// and whole microseconds), passed through from the proto result. DurationMs is
+// kept for older clients; DurationUs is omitted when zero and lets clients that
+// want sub-millisecond resolution use it in preference to DurationMs.
 type ExecResponse struct {
 	Stdout     string `json:"stdout"`
 	Stderr     string `json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int    `json:"duration_ms"`
+	DurationUs int64  `json:"duration_us,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -42,14 +48,24 @@ func NewServer(mgr sandbox.Manager) *Server {
 
 // Register attaches the sandbox routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /info", s.handleInfo)
 	mux.HandleFunc("POST /sandboxes", s.handleCreate)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExec)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDelete)
 }
 
+// handleInfo returns the daemon's resolved sandbox configuration (guest RAM,
+// vCPUs, boot path, packs, work dir) as JSON so tooling such as the benchmark
+// harness records real guest facts instead of hardcoding them. The body is
+// small and static, so no size limit applies; there is no auth, matching the
+// other routes and the same bind address.
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.Info())
+}
+
 const (
-	maxCreateBody = 4 << 10  // 4 KiB — language_pack name only
-	maxExecBody   = 1 << 20  // 1 MiB — code + stdin
+	maxCreateBody = 4 << 10 // 4 KiB — language_pack name only
+	maxExecBody   = 1 << 20 // 1 MiB — code + stdin
 )
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +122,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		Stderr:     res.Stderr,
 		ExitCode:   res.ExitCode,
 		DurationMs: res.DurationMs,
+		DurationUs: res.DurationUs,
 		Error:      res.Error,
 	})
 }

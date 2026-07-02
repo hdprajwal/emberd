@@ -122,7 +122,19 @@ curl -X POST localhost:7777/sandboxes/<id>/exec \
 
 # Destroy the sandbox
 curl -X DELETE localhost:7777/sandboxes/<id>
+
+# Inspect the daemon's resolved config (guest RAM/vCPUs, boot path, packs, work dir)
+curl localhost:7777/info
+# -> {"guest_ram_mib":256,"guest_vcpus":1,"boot_path":"warm-pool",
+#     "packs":["python","shell"],"work_dir":"/tmp/emberd"}
 ```
+
+`GET /info` reports the resolved sandbox configuration as JSON. `boot_path` is
+the fast-boot strategy a create takes given the daemon's state at query time:
+`warm-pool` when the pre-warmed pool is enabled, `snapshot-restore` when the
+pool is disabled but a template snapshot is registered, and `cold-boot` when
+the pool is disabled and no snapshot is registered (e.g. `-pool-size=-1
+-skip-warm` with an empty snapshot dir).
 
 ## Language packs
 
@@ -164,6 +176,10 @@ emberd-init (guest PID 1)
     |-- runs code under the language pack interpreter
     |-- returns stdout / stderr / exit_code
 ```
+
+## Performance
+
+The seven measured scenarios (cold boot, time-to-first-result, warm exec, workload matrix, concurrency sweep, churn, and per-sandbox memory) and how to run them are documented in the `bench/` package — see the header comment in `bench/main.go`. The latest full-run raw numbers are in `bench/results.json`.
 
 ## Repo layout
 

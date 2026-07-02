@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -157,6 +158,42 @@ func (c *Config) withDefaults() error {
 		}
 	}
 	return nil
+}
+
+// Boot-path labels reported by Info. They name the fast-boot strategy a Create
+// takes given the manager's state at query time. The set is intentionally small
+// and stable so downstream consumers (the bench env block) can rely on it.
+const (
+	// bootPathWarmPool: a warm pool is enabled, so Create pops a pre-warmed VM.
+	bootPathWarmPool = "warm-pool"
+	// bootPathSnapshotRestore: the pool is disabled but a template snapshot is
+	// registered, so Create restores from it instead of a full cold boot.
+	bootPathSnapshotRestore = "snapshot-restore"
+	// bootPathColdBoot: the pool is disabled and no template snapshot is
+	// registered (e.g. --skip-warm pointed at an empty snapshot dir), so a
+	// Create boots a fresh microVM.
+	bootPathColdBoot = "cold-boot"
+)
+
+// bootPath derives the fast-boot label from the state that actually decides a
+// Create's path: the pool config and the registered-snapshot set (acquire's
+// order of preference). It reports the state at query time, not a per-create
+// trace — a cold-boot manager kicks off a lazy background snapshot build after
+// its first Create, after which this honestly flips to "snapshot-restore".
+// With the pool enabled the label is "warm-pool" even while an initial
+// snapshot build or refill is still in flight: the pool is what serves creates
+// in steady state under that config.
+func (m *Manager) bootPath() string {
+	if m.cfg.PoolSize > 0 {
+		return bootPathWarmPool
+	}
+	m.snapshotMu.RLock()
+	registered := len(m.snapshots) > 0
+	m.snapshotMu.RUnlock()
+	if registered {
+		return bootPathSnapshotRestore
+	}
+	return bootPathColdBoot
 }
 
 // vm is a live microVM handle.
@@ -621,6 +658,27 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("stop vmm: %w", stopErr)
 	}
 	return nil
+}
+
+// Info reports the resolved sandbox configuration: the guest machine shape, the
+// fast-boot strategy a Create takes, the registered language packs, and the host
+// work directory. Static values come from the Config after New applied defaults;
+// the boot-path label additionally consults the registered-snapshot state, so it
+// matches what a Create actually does right now (see bootPath). The pack list is
+// sorted for a stable response.
+func (m *Manager) Info() sandbox.Info {
+	packs := make([]string, 0, len(m.cfg.Packs))
+	for name := range m.cfg.Packs {
+		packs = append(packs, name)
+	}
+	sort.Strings(packs)
+	return sandbox.Info{
+		GuestRAMMiB: int(m.cfg.MemSizeMib),
+		GuestVCPUs:  int(m.cfg.VcpuCount),
+		BootPath:    m.bootPath(),
+		Packs:       packs,
+		WorkDir:     m.cfg.WorkDir,
+	}
 }
 
 // runRefiller is the single goroutine that keeps pools topped up. It blocks on

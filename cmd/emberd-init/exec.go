@@ -32,15 +32,18 @@ func runExec(ctx context.Context, reaper *childReaper, interpreter string, req p
 
 	f, err := os.CreateTemp("", "emberd-code-*")
 	if err != nil {
-		return proto.ExecResult{ExitCode: -1, Error: "create code file: " + err.Error(), DurationMs: elapsed(start)}
+		ms, us := elapsed(start)
+		return proto.ExecResult{ExitCode: -1, Error: "create code file: " + err.Error(), DurationMs: ms, DurationUs: us}
 	}
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString(req.Code); err != nil {
 		f.Close()
-		return proto.ExecResult{ExitCode: -1, Error: "write code file: " + err.Error(), DurationMs: elapsed(start)}
+		ms, us := elapsed(start)
+		return proto.ExecResult{ExitCode: -1, Error: "write code file: " + err.Error(), DurationMs: ms, DurationUs: us}
 	}
 	if err := f.Close(); err != nil {
-		return proto.ExecResult{ExitCode: -1, Error: "close code file: " + err.Error(), DurationMs: elapsed(start)}
+		ms, us := elapsed(start)
+		return proto.ExecResult{ExitCode: -1, Error: "close code file: " + err.Error(), DurationMs: ms, DurationUs: us}
 	}
 
 	cmd := exec.CommandContext(ctx, interpreter, f.Name())
@@ -50,10 +53,12 @@ func runExec(ctx context.Context, reaper *childReaper, interpreter string, req p
 	cmd.Stderr = &stderr
 
 	exitCode, launchErr := launchAndWait(ctx, reaper, cmd)
+	ms, us := elapsed(start)
 	res := proto.ExecResult{
 		Stdout:     stdout.String(),
 		Stderr:     stderr.String(),
-		DurationMs: elapsed(start),
+		DurationMs: ms,
+		DurationUs: us,
 	}
 
 	switch {
@@ -89,6 +94,11 @@ func launchAndWait(ctx context.Context, reaper *childReaper, cmd *exec.Cmd) (exi
 	return -1, err
 }
 
-func elapsed(start time.Time) int {
-	return int(time.Since(start).Milliseconds())
+// elapsed reports the wall time since start as both whole milliseconds and
+// whole microseconds, taken from a single clock reading so ms always equals
+// us/1000 (truncated). DurationMs keeps its historical value for old hosts;
+// DurationUs carries the finer resolution.
+func elapsed(start time.Time) (ms int, us int64) {
+	d := time.Since(start)
+	return int(d.Milliseconds()), d.Microseconds()
 }

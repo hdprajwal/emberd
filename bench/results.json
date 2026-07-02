@@ -1,59 +1,402 @@
 {
+  "provenance": {
+    "timestamp": "2026-07-02T14:15:07Z",
+    "git_commit": "f3caf5a",
+    "bench_flags": {
+      "addr": "127.0.0.1:7777",
+      "churn": 100,
+      "cold": 50,
+      "conc-levels": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "exec": 200,
+      "mem-sandboxes": 8,
+      "out": "bench/results",
+      "packs": [
+        "python"
+      ],
+      "run": "all",
+      "ttfr": 30,
+      "workload-n": 30
+    }
+  },
   "env": {
     "os": "linux",
     "arch": "amd64",
     "cpu_model": "Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz",
     "cpu_cores": 8,
+    "host_kernel": "7.0.12-1-cachyos",
+    "cpu_governor": "powersave",
+    "governor_warning": true,
     "firecracker_version": "Firecracker v1.15.1",
     "guest_ram_mib": 256,
     "guest_vcpus": 1,
-    "language_pack": "python (python3)",
-    "boot_path": "snapshot restore (pool disabled)"
+    "boot_path": "warm-pool",
+    "daemon_info_source": "GET /info"
   },
   "binary_kb": {
-    "emberd_kb": 14205,
-    "emberd_init_kb": 4002
+    "emberd_kb": 14208,
+    "emberd_init_kb": 4003
   },
-  "cold_boot_ms": {
-    "n": 30,
-    "p50_ms": 17.339,
-    "p95_ms": 21.561,
-    "p99_ms": 23.293,
-    "min_ms": 16.226,
-    "max_ms": 23.293
-  },
-  "exec_create_ms": {
-    "n": 1,
-    "p50_ms": 16.288,
-    "p95_ms": 16.288,
-    "p99_ms": 16.288,
-    "min_ms": 16.288,
-    "max_ms": 16.288
-  },
-  "exec_api_ms": {
-    "n": 40,
-    "p50_ms": 14.409,
-    "p95_ms": 22.513,
-    "p99_ms": 40.832,
-    "min_ms": 13.267,
-    "max_ms": 40.832
-  },
-  "exec_guest_ms": {
-    "n": 40,
-    "p50_ms": 13,
-    "p95_ms": 21,
-    "p99_ms": 39,
-    "min_ms": 12,
-    "max_ms": 39
-  },
-  "conc_wall_ms": 21,
-  "conc_samples": 6,
-  "conc_per_sample_ms": {
-    "n": 6,
-    "p50_ms": 19.605,
-    "p95_ms": 21.051,
-    "p99_ms": 21.051,
-    "min_ms": 17.872,
-    "max_ms": 21.051
+  "scenarios": {
+    "churn": {
+      "cycle": {
+        "n": 100,
+        "mean_ms": 44.73740000000001,
+        "p50_ms": 44.844,
+        "p95_ms": 51.077,
+        "p99_ms": 54.885,
+        "min_ms": 37.937,
+        "max_ms": 55.943
+      },
+      "cycles_per_min": 1341.1342643040352,
+      "first_quartile_p50_ms": 45.803,
+      "last_quartile_p50_ms": 44.789,
+      "degradation_warning": false,
+      "leaks": {
+        "firecracker_procs_delta": 0,
+        "daemon_fd_delta": 4,
+        "status": "pass"
+      }
+    },
+    "cold_boot": {
+      "python": {
+        "create": {
+          "n": 50,
+          "mean_ms": 0.38231999999999994,
+          "p50_ms": 0.365,
+          "p95_ms": 0.468,
+          "min_ms": 0.262,
+          "max_ms": 0.881
+        },
+        "delete": {
+          "n": 50,
+          "mean_ms": 16.66354,
+          "p50_ms": 16.272,
+          "p95_ms": 23.39,
+          "min_ms": 8.369,
+          "max_ms": 25.556
+        }
+      }
+    },
+    "conc_sweep": [
+      {
+        "level": 1,
+        "wall_ms": 0.257,
+        "per_sandbox": {
+          "n": 1,
+          "mean_ms": 0.24,
+          "p50_ms": 0.24,
+          "min_ms": 0.24,
+          "max_ms": 0.24
+        },
+        "sandboxes_per_sec": 3891.050583657587
+      },
+      {
+        "level": 2,
+        "wall_ms": 0.573,
+        "per_sandbox": {
+          "n": 2,
+          "mean_ms": 0.4105,
+          "p50_ms": 0.517,
+          "min_ms": 0.304,
+          "max_ms": 0.517
+        },
+        "sandboxes_per_sec": 3490.4013961605588
+      },
+      {
+        "level": 4,
+        "wall_ms": 20.561,
+        "per_sandbox": {
+          "n": 4,
+          "mean_ms": 5.468,
+          "p50_ms": 0.584,
+          "min_ms": 0.379,
+          "max_ms": 20.433
+        },
+        "sandboxes_per_sec": 194.5430669714508
+      },
+      {
+        "level": 8,
+        "wall_ms": 26.518,
+        "per_sandbox": {
+          "n": 8,
+          "mean_ms": 15.388499999999999,
+          "p50_ms": 22.828,
+          "min_ms": 0.914,
+          "max_ms": 26.235
+        },
+        "sandboxes_per_sec": 301.6818764612716
+      },
+      {
+        "level": 16,
+        "wall_ms": 61.527,
+        "per_sandbox": {
+          "n": 16,
+          "mean_ms": 41.6234375,
+          "p50_ms": 51.385,
+          "min_ms": 0.372,
+          "max_ms": 61.114
+        },
+        "sandboxes_per_sec": 260.0484340208364
+      }
+    ],
+    "exec": {
+      "python": {
+        "api": {
+          "n": 199,
+          "mean_ms": 15.615462311557788,
+          "p50_ms": 15.155,
+          "p95_ms": 18.394,
+          "p99_ms": 21.94,
+          "min_ms": 13.303,
+          "max_ms": 26.555
+        },
+        "guest": {
+          "n": 199,
+          "mean_ms": 14.642417085427132,
+          "p50_ms": 14.272,
+          "p95_ms": 17.417,
+          "p99_ms": 21.093,
+          "min_ms": 12.352,
+          "max_ms": 25.297
+        },
+        "first_exec_ms": 25.26,
+        "guest_resolution": "us"
+      }
+    },
+    "memory": {
+      "idle_pss_mib": {
+        "n": 8,
+        "mean_ms": 7.0400390625,
+        "p50_ms": 7.044921875,
+        "min_ms": 7.03125,
+        "max_ms": 7.044921875
+      },
+      "loaded_pss_mib": {
+        "n": 8,
+        "mean_ms": 77.217041015625,
+        "p50_ms": 76.7373046875,
+        "min_ms": 76.09375,
+        "max_ms": 80.6787109375
+      },
+      "est_sandboxes_per_16gib": 213.5076292648163
+    },
+    "ttfr": {
+      "python": {
+        "total": {
+          "n": 30,
+          "mean_ms": 44.886399999999995,
+          "p50_ms": 44.877,
+          "p95_ms": 52.31,
+          "min_ms": 39.288,
+          "max_ms": 55.176
+        },
+        "create": {
+          "n": 30,
+          "mean_ms": 0.3648,
+          "p50_ms": 0.352,
+          "p95_ms": 0.548,
+          "min_ms": 0.263,
+          "max_ms": 0.565
+        },
+        "first_exec": {
+          "n": 30,
+          "mean_ms": 26.937166666666666,
+          "p50_ms": 26.989,
+          "p95_ms": 30.091,
+          "min_ms": 24.326,
+          "max_ms": 32.019
+        },
+        "delete": {
+          "n": 30,
+          "mean_ms": 17.582566666666665,
+          "p50_ms": 17.726,
+          "p95_ms": 24.723,
+          "min_ms": 11.23,
+          "max_ms": 24.736
+        }
+      }
+    },
+    "workloads": {
+      "code_64kb": {
+        "api": {
+          "n": 29,
+          "mean_ms": 18.702827586206897,
+          "p50_ms": 18.43,
+          "p95_ms": 21.005,
+          "min_ms": 16.001,
+          "max_ms": 21.191
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 15.497241379310346,
+          "p50_ms": 15.388,
+          "p95_ms": 17.443,
+          "min_ms": 13.587,
+          "max_ms": 17.784
+        }
+      },
+      "code_900kb": {
+        "api": {
+          "n": 29,
+          "mean_ms": 49.00610344827586,
+          "p50_ms": 49.108,
+          "p95_ms": 53.817,
+          "min_ms": 44.677,
+          "max_ms": 54.184
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 22.08662068965517,
+          "p50_ms": 21.865,
+          "p95_ms": 25.993,
+          "min_ms": 19.658,
+          "max_ms": 27.189
+        }
+      },
+      "exit_3": {
+        "api": {
+          "n": 29,
+          "mean_ms": 20.70534482758621,
+          "p50_ms": 20.469,
+          "p95_ms": 24.321,
+          "min_ms": 18.061,
+          "max_ms": 25.342
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 19.50010344827586,
+          "p50_ms": 19.335,
+          "p95_ms": 22.85,
+          "min_ms": 16.581,
+          "max_ms": 24.484
+        }
+      },
+      "hello": {
+        "api": {
+          "n": 29,
+          "mean_ms": 15.715275862068964,
+          "p50_ms": 15.706,
+          "p95_ms": 18.346,
+          "min_ms": 14.187,
+          "max_ms": 19.561
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 14.726068965517243,
+          "p50_ms": 14.546,
+          "p95_ms": 17.411,
+          "min_ms": 13.204,
+          "max_ms": 18.523
+        }
+      },
+      "imports": {
+        "api": {
+          "n": 29,
+          "mean_ms": 26.613896551724135,
+          "p50_ms": 25.723,
+          "p95_ms": 34.728,
+          "min_ms": 22.981,
+          "max_ms": 35.204
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 25.62789655172414,
+          "p50_ms": 24.681,
+          "p95_ms": 33.662,
+          "min_ms": 22.042,
+          "max_ms": 34.341
+        }
+      },
+      "out_1kb": {
+        "api": {
+          "n": 29,
+          "mean_ms": 15.64286206896552,
+          "p50_ms": 15.35,
+          "p95_ms": 18.132,
+          "min_ms": 13.81,
+          "max_ms": 19.946
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 14.626379310344829,
+          "p50_ms": 14.387,
+          "p95_ms": 17.248,
+          "min_ms": 12.791,
+          "max_ms": 18.903
+        }
+      },
+      "out_1mb": {
+        "api": {
+          "n": 29,
+          "mean_ms": 45.82879310344827,
+          "p50_ms": 44.51,
+          "p95_ms": 61.444,
+          "min_ms": 37.394,
+          "max_ms": 64.523
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 19.278862068965516,
+          "p50_ms": 18.637,
+          "p95_ms": 25.41,
+          "min_ms": 15.982,
+          "max_ms": 29.543
+        }
+      },
+      "stdin_64kb": {
+        "api": {
+          "n": 29,
+          "mean_ms": 24.377137931034486,
+          "p50_ms": 24.371,
+          "p95_ms": 30.676,
+          "min_ms": 19.242,
+          "max_ms": 33.554
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 20.729310344827585,
+          "p50_ms": 20.767,
+          "p95_ms": 26.859,
+          "min_ms": 16.119,
+          "max_ms": 28.651
+        }
+      },
+      "throughput_mb_s": {
+        "out_1kb": 0.0667100977198697,
+        "out_1mb": 23.558211637834194
+      },
+      "timeout_1s": {
+        "api": {
+          "n": 29,
+          "mean_ms": 1001.8116206896552,
+          "p50_ms": 1001.772,
+          "p95_ms": 1002.171,
+          "min_ms": 1001.492,
+          "max_ms": 1002.401
+        },
+        "guest": {
+          "n": 29,
+          "mean_ms": 1000.8122413793101,
+          "p50_ms": 1000.847,
+          "p95_ms": 1001.033,
+          "min_ms": 1000.602,
+          "max_ms": 1001.428
+        }
+      },
+      "timeout_overshoot": {
+        "n": 29,
+        "mean_ms": 1.8116206896551696,
+        "p50_ms": 1.7720000000000482,
+        "p95_ms": 2.171000000000049,
+        "min_ms": 1.4919999999999618,
+        "max_ms": 2.4009999999999536
+      }
+    }
   }
 }
