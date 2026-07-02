@@ -1,0 +1,264 @@
+---
+title: Performance
+description: Measured latency, throughput, concurrency, churn, and memory for the default warm-pool daemon, with methodology and provenance.
+---
+
+Every number on this page comes from one real benchmark run against a live
+`emberd` daemon driving real Firecracker microVMs. Nothing is modelled or
+extrapolated. The harness (`go run ./bench -run all`) writes the host
+environment and the exact commit into its result file, and the tables below
+quote those fields directly.
+
+<Callout type="info">
+  This run measures the **default, out-of-the-box daemon**, which uses the
+  warm-pool boot path. Every create number here is a **warm-pool hit** (a
+  pre-warmed VM handed out from memory), **not** a cold boot. See
+  [The three boot paths](#the-three-boot-paths) for what the other paths are.
+</Callout>
+
+## Environment
+
+All numbers below were measured on this machine:
+
+| | |
+| --- | --- |
+| Host OS | Linux / amd64 |
+| CPU | Intel Core i7-7700HQ @ 2.80 GHz (8 cores) |
+| Host kernel | `7.0.12-1-cachyos` |
+| CPU governor | `performance` (no frequency-scaling warning) |
+| Firecracker | v1.15.1 |
+| Guest RAM | 256 MiB |
+| Guest vCPUs | 1 |
+| Boot path | `warm-pool` (from `GET /info`) |
+| Language pack | `python` (python3) |
+| `emberd` binary | 14,208 KB |
+| `emberd-init` binary | 4,003 KB |
+
+Provenance: `go run ./bench -run all` at commit `f66ed85`, 2026-07-02 (UTC).
+
+## Headline numbers
+
+| Metric | Value | What it is |
+| --- | --- | --- |
+| Time-to-first-result | **43 ms** p50 | full `create → exec → delete` session |
+| Create (warm-pool hit) | **0.38 ms** p50 | hand out a pre-warmed VM, not a boot |
+| Delete | **16 ms** p50 | `SIGTERM` and wait for the VMM to exit |
+| Warm exec round-trip | **15 ms** p50 | steady-state `exec` over vsock |
+| vsock + host overhead | **0.97 ms** | api round-trip minus guest duration |
+| Peak create throughput | **4,808 /s** | serial warm-pool hits |
+| Sustained churn | **1,371 cycles/min** | 100 back-to-back full lifecycles |
+| Idle memory / sandbox | **7.2 MiB** PSS | booted, before any work |
+| Loaded memory / sandbox | **76.9 MiB** PSS | after running a workload |
+
+## Time-to-first-result
+
+This is the number to compare against hosted sandboxes like E2B: one full
+`create → exec("hello") → delete` session, timed end to end, from nothing to a
+result in hand. There is a 100 ms pause between iterations, outside the timed
+window.
+
+**Total session: 43 ms p50** (n = 30).
+
+| Component | n | mean | p50 | p95 | min | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| total | 30 | 43 ms | 43 ms | 48 ms | 35 ms | 49 ms |
+| create | 30 | 0.35 ms | 0.35 ms | 0.45 ms | 0.24 ms | 0.50 ms |
+| first exec | 30 | 26 ms | 26 ms | 28 ms | 24 ms | 29 ms |
+| delete | 30 | 16 ms | 17 ms | 20 ms | 9.2 ms | 24 ms |
+
+The first exec is the biggest piece. It pays the Python interpreter's one-time
+startup cost inside the guest, which a warm sandbox never pays again (see
+[Warm exec](#warm-exec-steady-state)). Create is nearly free on the warm-pool
+path. Delete is the second-largest piece.
+
+## Create and delete
+
+Create and delete, timed as separate series (n = 50 each), with a 100 ms pause
+after each delete, outside the timed window.
+
+| Operation | n | mean | p50 | p95 | min | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| create (warm-pool hit) | 50 | 0.39 ms | 0.38 ms | 0.60 ms | 0.26 ms | 0.69 ms |
+| delete | 50 | 16 ms | 16 ms | 24 ms | 8.5 ms | 29 ms |
+
+Create is sub-millisecond because the warm pool does the VM work ahead of time.
+What is left is HTTP handling and bookkeeping. Delete sends `SIGTERM` to the
+VMM, waits for it to exit, then throws away the sandbox's tmpfs and work
+directory.
+
+## Warm exec (steady-state)
+
+One warm sandbox, 199 execs of `hello`. The first exec is reported separately
+(**26 ms**, the interpreter starting up) and left out of the steady-state
+numbers below.
+
+| Series | n | mean | p50 | p95 | p99 | min | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| api round-trip | 199 | 15 ms | 15 ms | 17 ms | 22 ms | 13 ms | 26 ms |
+| guest duration | 199 | 14 ms | 14 ms | 16 ms | 21 ms | 12 ms | 25 ms |
+
+**What "api" and "guest" mean.** The api row is the full round-trip the caller
+sees: HTTP in, vsock to the guest, run the code, vsock back, HTTP out. The
+guest row is how long the guest agent says the code itself took, measured
+inside the VM at microsecond resolution. The difference is what emberd adds on
+top of the raw execution:
+
+**vsock + host overhead = 14.63 ms minus 13.66 ms = 0.97 ms.**
+
+So just under a millisecond of framing, vsock transit, and HTTP handling wraps
+each call. The earlier harness could only report this to the nearest
+millisecond; the guest clock now reports microseconds.
+
+## Workload matrix
+
+One warm sandbox on the `python` pack, 30 execs per payload (the first exec of
+each payload is treated as warmup and excluded). The sweep covers code size,
+output size, stdin, imports, and failure paths. Values are api round-trip p50
+unless noted.
+
+| Payload | api p50 | guest p50 | Notes |
+| --- | --- | --- | --- |
+| hello | 15 ms | 14 ms | baseline |
+| imports | 25 ms | 24 ms | importing stdlib modules |
+| code-64kb | 18 ms | 15 ms | 64 KiB of source |
+| code-900kb | 47 ms | 21 ms | 900 KiB of source; transfer dominates |
+| out-1kb | 15 ms | 14 ms | 1 KiB stdout |
+| out-1mb | 40 ms | 17 ms | 1 MiB stdout; output copy dominates |
+| stdin-64kb | 16 ms | 14 ms | 64 KiB piped in |
+| exit-3 | 14 ms | 13 ms | non-zero exit propagates |
+| timeout-1s | 1002 ms | 1001 ms | 1 s wall-clock timeout fires |
+
+Where the api and guest columns split apart (`code-900kb`, `out-1mb`), the gap
+is the cost of moving bytes over vsock and HTTP, not execution. The guest
+finishes fast; the transfer takes the rest.
+
+End-to-end exec throughput (output bytes divided by api p50, so it counts the
+whole request, not just the vsock hop):
+
+- `out-1kb`: 0.1 MB/s
+- `out-1mb`: **26.1 MB/s**
+
+Timeout overshoot (api round-trip minus the 1000 ms budget):
+
+| n | mean | p50 | p95 | min | max |
+| --- | --- | --- | --- | --- | --- |
+| 29 | 1.80 ms | 1.82 ms | 2.00 ms | 1.50 ms | 2.11 ms |
+
+Timeouts fire within about 2 ms of the budget.
+
+## Concurrency
+
+Boot L sandboxes at the same time, timing the wall clock until all are ready
+plus each sandbox's create latency. There is a 500 ms pause between levels, and
+levels above 2× host cores (16) skip themselves. The default warm pool holds a
+small number of pre-warmed VMs.
+
+| Level | wall | create p50 | throughput |
+| --- | --- | --- | --- |
+| 1 | 0.21 ms | 0.19 ms | 4,808 /s |
+| 2 | 0.52 ms | 0.49 ms | 3,868 /s |
+| 4 | 19 ms | 0.44 ms | 215 /s |
+| 8 | 28 ms | 20 ms | 290 /s |
+| 16 | 50 ms | 41 ms | 323 /s |
+
+The shape is the warm pool draining. At 1 or 2 concurrent creates, every
+request is a pool hit, so throughput is thousands per second. Past the pool's
+capacity, the extra creates wait for the daemon to warm replacements. Wall
+clock and per-sandbox p50 climb into the tens of milliseconds, and total
+throughput settles around 300/s once refills saturate the host. The slowdown
+is the cost of refilling the pool, not each sandbox getting slower.
+
+## Churn and leak checks
+
+100 back-to-back `create → exec → delete` cycles with no pause in between (the
+one scenario that deliberately skips the settle rule). This tests sustained
+throughput and looks for leaks.
+
+| n | mean | p50 | p95 | p99 | min | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| 100 | 44 ms | 43 ms | 51 ms | 54 ms | 35 ms | 56 ms |
+
+- **Throughput:** 1,371 cycles/min.
+- **No slowdown:** the first 25 cycles have a p50 of 42.7 ms and the last 25
+  have 43.8 ms, so the degradation warning did not fire.
+- **Leak check: pass.**
+  - firecracker process delta: **0** (any nonzero delta is a failure)
+  - daemon fd delta: **-2** (warns only above +8)
+
+Running the full lifecycle a hundred times in a row leaks no processes and no
+file descriptors, and the per-cycle latency stays flat.
+
+## Memory footprint
+
+8 sandboxes booted one at a time; per-sandbox host memory read as PSS from
+`/proc/<pid>/smaps_rollup`. PSS is each process's fair share of the memory it
+maps: pages shared between VMs are split between them instead of counted
+twice.
+
+| State | n | p50 | mean | min | max |
+| --- | --- | --- | --- | --- | --- |
+| idle | 8 | 7.2 MiB | 7.2 MiB | 7.2 MiB | 7.2 MiB |
+| loaded | 8 | 76.9 MiB | 77.4 MiB | 76.3 MiB | 80.8 MiB |
+
+A freshly booted sandbox costs about 7 MiB of host memory. After running a
+Python workload it settles around 77 MiB. Dividing 16 GiB by the loaded p50
+gives roughly **213 sandboxes per 16 GiB**. Treat that as a planning figure,
+not a guarantee; it ignores the daemon, the host, and headroom.
+
+## The three boot paths
+
+The create latency in this benchmark depends entirely on how the daemon is
+configured; the bench just calls `POST /sandboxes`. emberd has three ways to
+satisfy a create, and `GET /info` reports which one the daemon is running:
+
+- **Cold boot.** A full Firecracker startup: kernel boot, initramfs,
+  `switch_root`, and the `emberd-init` vsock bind. This is the fallback when
+  there is no snapshot and no pooled VM, and it is the slowest path by far.
+- **Snapshot restore.** Resume a paused, pre-warmed template memory image. The
+  guest page cache and the already-listening `emberd-init` come back with the
+  image, so the VM is ready almost immediately. An order of magnitude faster
+  than a cold boot.
+- **Warm pool.** Hand out an already-restored VM from an in-memory channel.
+  Create wall time is then mostly HTTP and bookkeeping, which is why create
+  lands sub-millisecond above.
+
+**This page measures the warm-pool path only**, the default you get from
+`./bin/emberd`. Cold boot and snapshot restore need their own runs against a
+daemon started with different flags, so their latencies are not quoted here.
+
+## Methodology
+
+- **Scenario definitions.** Each scenario times one specific thing. *TTFR* is
+  the whole `create → exec → delete` session. *Create/delete* time those two
+  operations separately. *Warm exec* keeps one sandbox open and measures
+  steady-state execs, with the interpreter warmup reported on its own. The
+  *workload matrix* sweeps payload shapes. *Concurrency* boots L sandboxes at
+  once. *Churn* runs the full lifecycle back-to-back to check for slowdowns
+  and leaks. *Memory* reads per-sandbox PSS.
+- **api vs guest.** "api" is the round-trip the caller sees. "guest" is how
+  long the guest agent says the code took, at microsecond resolution. The
+  difference is emberd's vsock and HTTP overhead.
+- **Memory is PSS**, not RSS. Shared pages (the read-only base rootfs) are
+  split across the VMs that share them, so per-sandbox figures do not count
+  the same memory twice.
+- **Percentile gating.** p95 needs n ≥ 20 and p99 needs n ≥ 100. Below those
+  thresholds the cell is left empty instead of quoting a number the sample
+  size cannot support. That is why only warm exec (n = 199) and churn
+  (n = 100) carry a p99.
+- **Settle discipline.** Most scenarios pause 100 to 500 ms between iterations
+  so one measurement does not overlap the last one's teardown. Churn is the
+  deliberate exception: it measures the no-pause case.
+
+## Reproducing
+
+Start the default daemon and run the full suite:
+
+```bash
+./bin/emberd &
+go run ./bench -run all
+```
+
+The harness prints a Markdown report to stdout and writes a JSON result file
+(with the provenance and environment blocks quoted above) under
+`bench/results/`. Run the `memory` scenario against a pool-disabled daemon
+(`./bin/emberd -pool-size=-1`) if you want unambiguous PID attribution.
