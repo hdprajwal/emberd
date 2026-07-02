@@ -1,59 +1,45 @@
 {
+  "provenance": {
+    "timestamp": "2026-07-02T12:25:51Z",
+    "git_commit": "6860f6e",
+    "bench_flags": {
+      "addr": "127.0.0.1:7777",
+      "churn": 100,
+      "cold": 5,
+      "conc-levels": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "exec": 20,
+      "mem-sandboxes": 8,
+      "out": "bench/results",
+      "packs": [
+        "python"
+      ],
+      "run": "cold-boot,exec",
+      "ttfr": 30,
+      "workload-n": 30
+    }
+  },
   "env": {
     "os": "linux",
     "arch": "amd64",
     "cpu_model": "Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz",
     "cpu_cores": 8,
+    "host_kernel": "7.0.12-1-cachyos",
+    "cpu_governor": "powersave",
+    "governor_warning": true,
     "firecracker_version": "Firecracker v1.15.1",
-    "guest_ram_mib": 256,
-    "guest_vcpus": 1,
-    "language_pack": "python (python3)",
-    "boot_path": "snapshot restore (pool disabled)"
+    "guest_ram_mib": "unknown (daemon has no /info endpoint)",
+    "guest_vcpus": "unknown (daemon has no /info endpoint)",
+    "boot_path": "unknown (daemon has no /info endpoint)",
+    "daemon_info_source": "unknown (daemon has no /info endpoint)"
   },
   "binary_kb": {
     "emberd_kb": 14205,
     "emberd_init_kb": 4002
-  },
-  "cold_boot_ms": {
-    "n": 30,
-    "p50_ms": 17.339,
-    "p95_ms": 21.561,
-    "p99_ms": 23.293,
-    "min_ms": 16.226,
-    "max_ms": 23.293
-  },
-  "exec_create_ms": {
-    "n": 1,
-    "p50_ms": 16.288,
-    "p95_ms": 16.288,
-    "p99_ms": 16.288,
-    "min_ms": 16.288,
-    "max_ms": 16.288
-  },
-  "exec_api_ms": {
-    "n": 40,
-    "p50_ms": 14.409,
-    "p95_ms": 22.513,
-    "p99_ms": 40.832,
-    "min_ms": 13.267,
-    "max_ms": 40.832
-  },
-  "exec_guest_ms": {
-    "n": 40,
-    "p50_ms": 13,
-    "p95_ms": 21,
-    "p99_ms": 39,
-    "min_ms": 12,
-    "max_ms": 39
-  },
-  "conc_wall_ms": 21,
-  "conc_samples": 6,
-  "conc_per_sample_ms": {
-    "n": 6,
-    "p50_ms": 19.605,
-    "p95_ms": 21.051,
-    "p99_ms": 21.051,
-    "min_ms": 17.872,
-    "max_ms": 21.051
   }
 }
