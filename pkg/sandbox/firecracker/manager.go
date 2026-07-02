@@ -222,13 +222,22 @@ func New(cfg Config) (*Manager, error) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
 
-	return &Manager{
+	m := &Manager{
 		cfg:       cfg,
 		logger:    logrus.NewEntry(logger),
 		vms:       make(map[string]*vm),
 		nextCID:   firstGuestCID,
 		snapshots: make(map[string]snapshotPaths),
-	}, nil
+	}
+
+	// Register reusable snapshots, clean stale ones, and (unless warm-on-start is
+	// skipped) build any that are missing. A build failure fails New — the same
+	// contract as the artifact-existence check above.
+	if err := m.loadOrBuildSnapshots(context.Background()); err != nil {
+		return nil, err
+	}
+
+	return m, nil
 }
 
 // Create boots a fresh microVM running the named language pack and returns its
@@ -432,10 +441,18 @@ func (m *Manager) Exec(ctx context.Context, id string, req proto.ExecRequest) (p
 	if !ok {
 		return proto.ExecResult{}, sandbox.ErrNotFound
 	}
+	return m.execVM(ctx, v, req)
+}
 
+// execVM runs one request against a specific VM handle over vsock. It is split
+// out of Exec so the snapshot warm-up can drive an unregistered template VM
+// (one that never enters m.vms). Each call opens and closes its own vsock
+// connection, so no connection lingers open — important for the warm-up path,
+// since a snapshot taken with an open vsock connection is invalid.
+func (m *Manager) execVM(ctx context.Context, v *vm, req proto.ExecRequest) (proto.ExecResult, error) {
 	conn, err := proto.DialGuest(v.vsockUDS, v.vsockPort)
 	if err != nil {
-		return proto.ExecResult{}, fmt.Errorf("connect sandbox %s: %w", id, err)
+		return proto.ExecResult{}, fmt.Errorf("connect sandbox %s: %w", v.sb.ID, err)
 	}
 	defer conn.Close()
 
