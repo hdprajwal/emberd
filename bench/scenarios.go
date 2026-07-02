@@ -173,15 +173,23 @@ func runTTFR(rc *runContext) (ScenarioResult, error) {
 			te := time.Now()
 			outcome, err := rc.Client.Exec(rc.Ctx, id, hello.Code, hello.Stdin, hello.TimeoutMs)
 			if err != nil {
+				// Best-effort cleanup: scenario errors are fatal, so without
+				// this the iteration's sandbox would stay running on the
+				// daemon (same pattern as execWarmSandbox).
+				_ = rc.Client.Delete(rc.Ctx, id)
 				return ScenarioResult{}, fmt.Errorf("ttfr[%s] iteration %d: exec: %w", pack, i, err)
 			}
 			firstExecs = append(firstExecs, timeMs(te))
 			if err := checkPayload(hello, i, outcome); err != nil {
+				_ = rc.Client.Delete(rc.Ctx, id) // best-effort cleanup; the mismatch is what matters
 				return ScenarioResult{}, fmt.Errorf("ttfr[%s]: %w", pack, err)
 			}
 
 			td := time.Now()
 			if err := rc.Client.Delete(rc.Ctx, id); err != nil {
+				// One best-effort retry: a transient failure here would
+				// otherwise leak the sandbox, since this error is fatal.
+				_ = rc.Client.Delete(rc.Ctx, id)
 				return ScenarioResult{}, fmt.Errorf("ttfr[%s] iteration %d: delete: %w", pack, i, err)
 			}
 			deletes = append(deletes, timeMs(td))
