@@ -565,6 +565,10 @@ func (m *Manager) Exec(ctx context.Context, id string, req proto.ExecRequest) (p
 // connection, so no connection lingers open — important for the warm-up path,
 // since a snapshot taken with an open vsock connection is invalid.
 func (m *Manager) execVM(ctx context.Context, v *vm, req proto.ExecRequest) (proto.ExecResult, error) {
+	// Stamp the host wall clock so a restored guest (resumed with the
+	// snapshot's stale clock) can self-heal its time before running the code.
+	req.HostTimeUnixNano = time.Now().UnixNano()
+
 	conn, err := proto.DialGuest(v.vsockUDS, v.vsockPort)
 	if err != nil {
 		return proto.ExecResult{}, fmt.Errorf("connect sandbox %s: %w", v.sb.ID, err)

@@ -27,6 +27,12 @@ type ExecRequest struct {
 	Code      string `json:"code"`
 	Stdin     string `json:"stdin,omitempty"`
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
+	// HostTimeUnixNano is the host wall clock at send time, used by the guest
+	// to resync its own clock after a snapshot restore (which resumes with the
+	// snapshot's stale clock). A zero value means "don't touch the clock" —
+	// older hosts omit it and older guests ignore it, so it is backward and
+	// forward compatible.
+	HostTimeUnixNano int64 `json:"host_time_unix_nano,omitempty"`
 }
 
 // ExecResult is sent guest -> host with the outcome of an ExecRequest.

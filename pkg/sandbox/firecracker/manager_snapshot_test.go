@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -647,5 +648,93 @@ func TestCloseDrainsPool(t *testing.T) {
 	// Close is idempotent: a second call (and the deferred t.Cleanup) must no-op.
 	if err := m.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestRestoreEntropyDiverges restores two VMs from ONE snapshot and asserts
+// their RNGs diverge: each execs uuid.uuid4() and the two outputs must differ.
+// Both wake from the same memory image, so without fresh entropy they would
+// produce identical UUIDs. Firecracker's VMGenID device plus the guest kernel's
+// vmgenid driver reseed the RNG on restore, which should make this pass with no
+// guest-side work. If it fails (kernel lacks CONFIG_VMGENID), the spec's
+// fallback seeds /dev/urandom from a host-supplied header instead.
+func TestRestoreEntropyDiverges(t *testing.T) {
+	m := newIntegrationManager(t, nil)
+	ctx := context.Background()
+
+	const code = "import uuid; print(uuid.uuid4())"
+	outputs := make([]string, 2)
+	for i := 0; i < 2; i++ {
+		v, err := m.restoreFromSnapshot(ctx, "python")
+		if err != nil {
+			t.Fatalf("restore %d: %v", i, err)
+		}
+		registerVM(m, v)
+
+		res, err := m.Exec(ctx, v.sb.ID, proto.ExecRequest{Code: code})
+		if err != nil {
+			t.Fatalf("exec %d: %v", i, err)
+		}
+		if res.ExitCode != 0 {
+			t.Fatalf("exec %d exit code = %d, stderr=%q", i, res.ExitCode, res.Stderr)
+		}
+		outputs[i] = strings.TrimSpace(res.Stdout)
+		t.Logf("restore %d uuid: %s", i, outputs[i])
+
+		if err := m.Delete(ctx, v.sb.ID); err != nil {
+			t.Fatalf("Delete %d: %v", i, err)
+		}
+	}
+
+	if outputs[0] == "" {
+		t.Fatalf("empty uuid output")
+	}
+	if outputs[0] == outputs[1] {
+		t.Fatalf("two restores produced identical randomness %q; RNG did not reseed across restore (VMGenID/entropy hygiene broken)", outputs[0])
+	}
+}
+
+// TestRestoreClockResync proves a restored guest self-heals its wall clock. The
+// snapshot was taken earlier, so the restored VM wakes with a stale clock; the
+// manager stamps HostTimeUnixNano on every exec and PID-1 emberd-init steps
+// CLOCK_REALTIME to it. The guest's reported time.time() must land within 2 s of
+// the host clock at exec time.
+func TestRestoreClockResync(t *testing.T) {
+	m := newIntegrationManager(t, nil)
+	ctx := context.Background()
+
+	v, err := m.restoreFromSnapshot(ctx, "python")
+	if err != nil {
+		t.Fatalf("restoreFromSnapshot: %v", err)
+	}
+	registerVM(m, v)
+
+	hostBefore := time.Now()
+	res, err := m.Exec(ctx, v.sb.ID, proto.ExecRequest{Code: "import time; print(time.time())"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	hostAfter := time.Now()
+	if res.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr=%q", res.ExitCode, res.Stderr)
+	}
+
+	guestUnix, err := strconv.ParseFloat(strings.TrimSpace(res.Stdout), 64)
+	if err != nil {
+		t.Fatalf("parse guest time %q: %v", res.Stdout, err)
+	}
+	guestTime := time.Unix(0, int64(guestUnix*float64(time.Second)))
+	t.Logf("host=%s guest=%s", hostAfter.Format(time.RFC3339Nano), guestTime.Format(time.RFC3339Nano))
+
+	// The guest read happens between hostBefore and hostAfter; allow 2 s slack
+	// on either side of that window.
+	const tol = 2 * time.Second
+	if guestTime.Before(hostBefore.Add(-tol)) || guestTime.After(hostAfter.Add(tol)) {
+		t.Fatalf("guest clock %s outside [%s, %s] +/- %s of host (resync failed)",
+			guestTime, hostBefore, hostAfter, tol)
+	}
+
+	if err := m.Delete(ctx, v.sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
 	}
 }
