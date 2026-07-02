@@ -2,6 +2,14 @@
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
 
+/* Tailwind's automatic source detection honors git ignore rules, and this
+ * repo's local .git/info/exclude ignores every dir named `docs/` — which
+ * accidentally hides app/docs/ and content/docs/ from class scanning
+ * (e.g. the pre-alpha banner's bg class was never emitted, leaving it
+ * transparent). Register them explicitly; @source bypasses ignore rules. */
+@source './docs';
+@source '../content';
+
 html {
   scrollbar-gutter: stable;
 }
