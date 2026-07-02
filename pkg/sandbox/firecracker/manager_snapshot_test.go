@@ -281,9 +281,11 @@ func TestRestoreExec(t *testing.T) {
 }
 
 // TestRestoreIsolation restores two VMs from the same snapshot concurrently and
-// proves they are fully isolated: each writes a distinct file into its own guest
-// /tmp and reads it back, seeing only its own value, and the two host vsock
-// sockets live at distinct paths (distinct per-VM cwds).
+// proves they are fully isolated: both write distinct values to the SAME guest
+// path (/tmp/marker), then each reads it back and must see only its own value —
+// a shared filesystem would make the earlier writer read the later writer's
+// value. The two host vsock sockets must also live at distinct paths (distinct
+// per-VM cwds).
 func TestRestoreIsolation(t *testing.T) {
 	m := newIntegrationManager(t, nil)
 	ctx := context.Background()
@@ -315,24 +317,31 @@ func TestRestoreIsolation(t *testing.T) {
 		t.Fatalf("sibling restores share a vsock path %q; they must be distinct", vms[0].vsockUDS)
 	}
 
-	// Each VM writes a distinct marker into its own guest /tmp and reads it back.
-	// Cross-talk (shared guest filesystem or shared socket) would surface as one
-	// VM seeing the other's value.
+	// Write phase first, in BOTH VMs, to the SAME guest path; only then the read
+	// phase. If the restores shared a filesystem (or one socket reached both),
+	// vm 0's read — issued after vm 1's write — would see vm 1's value.
+	marker := func(i int) string { return fmt.Sprintf("vm-%d-marker", i) }
 	for i, v := range vms {
-		want := fmt.Sprintf("vm-%d-marker", i)
-		code := fmt.Sprintf(
-			"open('/tmp/marker','w').write('%s'); print(open('/tmp/marker').read())",
-			want,
-		)
+		code := fmt.Sprintf("open('/tmp/marker','w').write('%s')", marker(i))
 		res, err := m.Exec(ctx, v.sb.ID, proto.ExecRequest{Code: code})
 		if err != nil {
-			t.Fatalf("Exec vm %d: %v", i, err)
+			t.Fatalf("write exec vm %d: %v", i, err)
 		}
 		if res.ExitCode != 0 {
-			t.Fatalf("vm %d exit code = %d, stderr=%q", i, res.ExitCode, res.Stderr)
+			t.Fatalf("write vm %d exit code = %d, stderr=%q", i, res.ExitCode, res.Stderr)
+		}
+	}
+	for i, v := range vms {
+		want := marker(i)
+		res, err := m.Exec(ctx, v.sb.ID, proto.ExecRequest{Code: "print(open('/tmp/marker').read())"})
+		if err != nil {
+			t.Fatalf("read exec vm %d: %v", i, err)
+		}
+		if res.ExitCode != 0 {
+			t.Fatalf("read vm %d exit code = %d, stderr=%q", i, res.ExitCode, res.Stderr)
 		}
 		if res.Stdout != want+"\n" {
-			t.Fatalf("vm %d stdout = %q, want %q", i, res.Stdout, want+"\n")
+			t.Fatalf("vm %d read back %q, want %q (cross-talk between sibling restores)", i, res.Stdout, want+"\n")
 		}
 	}
 
