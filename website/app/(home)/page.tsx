@@ -5,9 +5,9 @@ import { ArrowRight, ArrowUpRight } from 'lucide-react';
 const GITHUB = 'https://github.com/hdprajwal/emberd';
 
 const stats = [
-  { value: '≈450 ms', label: 'Cold boot' },
-  { value: '256 MiB', label: 'Guest RAM' },
-  { value: '1 : 1', label: 'VM per sandbox' },
+  { value: '43 ms', label: 'Time to first result' },
+  { value: '<1 ms', label: 'Create (warm pool)' },
+  { value: '7 MiB', label: 'Idle RAM per sandbox' },
   { value: 'None', label: 'Network by default' },
 ];
 
@@ -19,8 +19,8 @@ const features = [
   },
   {
     n: '02',
-    title: 'Serving in ~450 ms',
-    body: 'A custom Go initramfs boots an overlayfs root and switch_roots in. create blocks on a vsock readiness probe, so a returned sandbox is usable on the very first exec.',
+    title: 'Serving in ~43 ms',
+    body: 'A warm pool and snapshot restore hand out microVMs in under a millisecond; a full create → exec → destroy round-trip lands in ~43 ms. create blocks on a vsock readiness probe, so a returned sandbox is usable on the very first exec.',
   },
   {
     n: '03',
@@ -135,7 +135,7 @@ export default function HomePage() {
               </Line>
               <Line muted>
                 {'{ "id": "sb_c1728b82ac4f" }'}
-                <span className="t-faint">  # boots a microVM · ~450 ms</span>
+                <span className="t-faint">  # pops a pre-warmed microVM · &lt;1 ms</span>
               </Line>
 
               <Spacer />
