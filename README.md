@@ -130,8 +130,11 @@ curl localhost:7777/info
 ```
 
 `GET /info` reports the resolved sandbox configuration as JSON. `boot_path` is
-the fast-boot strategy a create takes under the current config: `warm-pool`
-when the pre-warmed pool is enabled, `snapshot-restore` when it is disabled.
+the fast-boot strategy a create takes given the daemon's state at query time:
+`warm-pool` when the pre-warmed pool is enabled, `snapshot-restore` when the
+pool is disabled but a template snapshot is registered, and `cold-boot` when
+the pool is disabled and no snapshot is registered (e.g. `-pool-size=-1
+-skip-warm` with an empty snapshot dir).
 
 ## Language packs
 
