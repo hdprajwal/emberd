@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +21,8 @@ func init() {
 	registerScenario("cold-boot", runColdBoot)
 	registerScenario("ttfr", runTTFR)
 	registerScenario("exec", runExecScenario)
+	registerScenario("workloads", runWorkloads)
+	registerScenario("conc-sweep", runConcSweep)
 }
 
 // timeMs returns the elapsed time since start in fractional milliseconds.
@@ -321,6 +327,322 @@ func execWarmSandbox(rc *runContext, pack, id string, hello Payload, n int) (Exe
 		FirstExecMs:     firstExecMs,
 		GuestResolution: resolution,
 	}, nil
+}
+
+// WorkloadPayloadResult is one payload's warm-exec outcome in the workloads
+// scenario: the API round-trip and guest-reported duration as separate
+// sample series (bench-v2-spec.md §6.4, §9.4).
+type WorkloadPayloadResult struct {
+	API   Stats `json:"api"`
+	Guest Stats `json:"guest"`
+}
+
+// WorkloadResult is the workloads scenario's JSON payload. Each matrix
+// payload contributes an entry keyed by its underscored name (e.g.
+// code_64kb); alongside those it carries derived end-to-end throughput for
+// the output-heavy payloads and the timeout-enforcement overshoot
+// distribution (bench-v2-spec.md §6.4, §9.4).
+type WorkloadResult struct {
+	// Payloads maps each payload's underscored JSON key to its result.
+	Payloads map[string]WorkloadPayloadResult
+	// ThroughputMBs maps out_1kb / out_1mb to end-to-end MB/s.
+	ThroughputMBs map[string]float64
+	// TimeoutOvershoot is the observed api_ms − timeout budget per sample
+	// for the timeout-1s payload.
+	TimeoutOvershoot Stats
+}
+
+// MarshalJSON flattens the per-payload entries to the top level alongside
+// the reserved throughput_mb_s and timeout_overshoot keys, matching the
+// schema in bench-v2-spec.md §9.4.
+func (r WorkloadResult) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any, len(r.Payloads)+2)
+	for k, v := range r.Payloads {
+		out[k] = v
+	}
+	out["throughput_mb_s"] = r.ThroughputMBs
+	out["timeout_overshoot"] = r.TimeoutOvershoot
+	return json.Marshal(out)
+}
+
+// payloadJSONKey maps a payload's hyphenated name to its underscored JSON
+// key (e.g. "code-64kb" -> "code_64kb"), the same hyphen-to-underscore rule
+// the report layer applies to scenario names (bench-v2-spec.md §9.4).
+func payloadJSONKey(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
+}
+
+// throughputMBs derives end-to-end exec throughput in MB/s from a payload's
+// observed output size and its API-round-trip p50: outputBytes / api_p50.
+// It is honestly the whole request's throughput (transfer + guest work), not
+// an isolated vsock number — subtracting the guest duration would be invalid
+// because both the API and guest measurements include the transfer
+// (bench-v2-spec.md §6.4). Returns 0 when p50 is non-positive.
+func throughputMBs(outputBytes int, p50Ms float64) float64 {
+	if p50Ms <= 0 {
+		return 0
+	}
+	return float64(outputBytes) / (p50Ms * 1000.0)
+}
+
+// runWorkloads execs the full payload matrix against one warm sandbox on the
+// first configured pack (bench-v2-spec.md §6.8 — this scenario measures the
+// runtime, not each pack's interpreter). Each payload's first exec is
+// excluded as warmup (§4: the interpreter is warm but a payload's own
+// imports may still be cold), and every exec is checked against the
+// payload's assertion. The output-heavy payloads yield derived throughput
+// and timeout-1s yields an enforcement-overshoot distribution
+// (bench-v2-spec.md §6.4).
+func runWorkloads(rc *runContext) (ScenarioResult, error) {
+	pack := rc.Config.Packs[0]
+	n := rc.Config.WorkloadN
+	if n < 1 {
+		return ScenarioResult{}, fmt.Errorf("workloads[%s]: -workload-n must be >= 1, got %d", pack, n)
+	}
+
+	id, err := rc.Client.Create(rc.Ctx, pack)
+	if err != nil {
+		return ScenarioResult{}, fmt.Errorf("workloads[%s]: create: %w", pack, err)
+	}
+
+	result := WorkloadResult{
+		Payloads:      make(map[string]WorkloadPayloadResult),
+		ThroughputMBs: make(map[string]float64),
+	}
+	outBytes := make(map[string]int)
+	var rows []statsRow
+
+	for _, payload := range PayloadsForPack(pack) {
+		// mem-touch belongs to the memory scenario only (bench-v2-spec.md
+		// §6.7); it is not part of the workloads loop.
+		if payload.Name == "mem-touch" {
+			continue
+		}
+
+		apiSamples, guestSamples, ob, err := workloadPayloadSamples(rc, pack, id, payload, n)
+		if err != nil {
+			_ = rc.Client.Delete(rc.Ctx, id) // best-effort cleanup; the exec/assert error is what matters
+			return ScenarioResult{}, err
+		}
+
+		key := payloadJSONKey(payload.Name)
+		api := NewStats(apiSamples)
+		result.Payloads[key] = WorkloadPayloadResult{API: api, Guest: NewStats(guestSamples)}
+		outBytes[key] = ob
+		rows = append(rows, statsRow{payload.Name, api})
+
+		if payload.Name == "timeout-1s" {
+			overshoot := make([]float64, len(apiSamples))
+			for i, v := range apiSamples {
+				overshoot[i] = v - float64(payload.TimeoutMs)
+			}
+			result.TimeoutOvershoot = NewStats(overshoot)
+		}
+	}
+
+	if err := rc.Client.Delete(rc.Ctx, id); err != nil {
+		return ScenarioResult{}, fmt.Errorf("workloads[%s]: delete: %w", pack, err)
+	}
+
+	// Derived end-to-end throughput for the output-heavy payloads (§6.4).
+	for _, name := range []string{"out-1kb", "out-1mb"} {
+		key := payloadJSONKey(name)
+		if pr, ok := result.Payloads[key]; ok {
+			result.ThroughputMBs[key] = throughputMBs(outBytes[key], pr.API.P50Ms)
+		}
+	}
+
+	var md strings.Builder
+	md.WriteString("## Workloads (payload matrix)\n\n")
+	fmt.Fprintf(&md, "One warm sandbox on the `%s` pack; %d execs per payload, the first of each excluded as warmup (bench-v2-spec.md §6.4). API round-trip per payload:\n\n", pack, n)
+	md.WriteString(statsTable(rows))
+	md.WriteString("\n")
+
+	md.WriteString("End-to-end exec throughput (output bytes ÷ api p50 — the whole request, not an isolated vsock number):\n\n")
+	for _, name := range []string{"out-1kb", "out-1mb"} {
+		key := payloadJSONKey(name)
+		if v, ok := result.ThroughputMBs[key]; ok {
+			fmt.Fprintf(&md, "- `%s`: %s\n", name, FormatThroughputMBs(v))
+		}
+	}
+	md.WriteString("\n")
+
+	if result.TimeoutOvershoot.N > 0 {
+		md.WriteString("Timeout enforcement overshoot (observed api − 1000 ms timeout budget):\n\n")
+		md.WriteString(statsTable([]statsRow{{"timeout-1s overshoot", result.TimeoutOvershoot}}))
+		md.WriteString("\n")
+	}
+
+	return ScenarioResult{JSON: result, Markdown: md.String()}, nil
+}
+
+// workloadPayloadSamples runs n execs of payload against the already-created
+// warm sandbox id, excluding the first (warmup) exec per §4. It returns the
+// steady-state API-round-trip samples, the guest-duration samples, and the
+// stdout byte length observed on the final exec (used to derive throughput).
+// Every exec — warmup included — is checked against payload's assertion, so
+// a wrong result fails fatally rather than being silently timed.
+func workloadPayloadSamples(rc *runContext, pack, id string, payload Payload, n int) (apiSamples, guestSamples []float64, outBytes int, err error) {
+	warm, err := rc.Client.Exec(rc.Ctx, id, payload.Code, payload.Stdin, payload.TimeoutMs)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("workloads[%s] payload %q warmup exec: %w", pack, payload.Name, err)
+	}
+	if err := checkPayload(payload, 0, warm); err != nil {
+		return nil, nil, 0, fmt.Errorf("workloads[%s]: %w", pack, err)
+	}
+	outBytes = len(warm.Stdout)
+
+	apiSamples = make([]float64, 0, n-1)
+	guestSamples = make([]float64, 0, n-1)
+	for i := 1; i < n; i++ {
+		t := time.Now()
+		outcome, err := rc.Client.Exec(rc.Ctx, id, payload.Code, payload.Stdin, payload.TimeoutMs)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("workloads[%s] payload %q iteration %d: %w", pack, payload.Name, i, err)
+		}
+		apiSamples = append(apiSamples, timeMs(t))
+		if err := checkPayload(payload, i, outcome); err != nil {
+			return nil, nil, 0, fmt.Errorf("workloads[%s]: %w", pack, err)
+		}
+		guestSamples = append(guestSamples, outcome.GuestDurationMs)
+		outBytes = len(outcome.Stdout)
+	}
+	return apiSamples, guestSamples, outBytes, nil
+}
+
+// concSettleDelay is the fixed sleep after each concurrency level's teardown,
+// longer than settleDelay because a level tears down up to L Firecracker
+// processes at once and the next level must not overlap that cleanup
+// (bench-v2-spec.md §6.5).
+const concSettleDelay = 500 * time.Millisecond
+
+// ConcLevelResult is one successful concurrency level's outcome: wall time to
+// boot all L sandboxes, the per-sandbox create distribution (n = L, so gated
+// percentiles are absent for small L — correct, not a bug), and derived
+// throughput (bench-v2-spec.md §6.5, §9.4).
+type ConcLevelResult struct {
+	Level           int     `json:"level"`
+	WallMs          float64 `json:"wall_ms"`
+	PerSandbox      Stats   `json:"per_sandbox"`
+	SandboxesPerSec float64 `json:"sandboxes_per_sec"`
+}
+
+// concLevelFailed is the JSON shape recorded when a create fails at a level:
+// the level is marked failed with the error and the bench continues to the
+// next level rather than aborting (bench-v2-spec.md §6.5).
+type concLevelFailed struct {
+	Level  int    `json:"level"`
+	Failed bool   `json:"failed"`
+	Error  string `json:"error"`
+}
+
+// runConcSweep boots L sandboxes concurrently for each level L in the sweep
+// list on the first configured pack (bench-v2-spec.md §6.8), recording wall
+// time to all-ready and per-sandbox create latency. Levels above 2× the host
+// core count self-skip with a stderr note; a create failure at a level is
+// recorded (not fatal) and the bench continues. It settles concSettleDelay
+// between levels (bench-v2-spec.md §6.5).
+func runConcSweep(rc *runContext) (ScenarioResult, error) {
+	pack := rc.Config.Packs[0]
+	cores := runtime.NumCPU()
+	maxLevel := 2 * cores
+
+	results := make([]any, 0, len(rc.Config.ConcLevels))
+	var md strings.Builder
+	md.WriteString("## Concurrency sweep\n\n")
+	fmt.Fprintf(&md, "Boot L sandboxes concurrently on the `%s` pack, timing wall-clock to all-ready and per-sandbox create latency. %s settle between levels; levels above 2× host cores (%d) self-skip (bench-v2-spec.md §6.5).\n\n", pack, concSettleDelay, maxLevel)
+	md.WriteString("| level | wall | create p50 | create p95 | create p99 | throughput |\n")
+	md.WriteString("|---|---|---|---|---|---|\n")
+
+	for _, level := range rc.Config.ConcLevels {
+		if level < 1 {
+			fmt.Fprintf(os.Stderr, "note: conc-sweep skipping non-positive level %d\n", level)
+			continue
+		}
+		if level > maxLevel {
+			fmt.Fprintf(os.Stderr, "note: conc-sweep skipping level %d (> 2× host cores = %d)\n", level, maxLevel)
+			continue
+		}
+
+		levelRes, row := runConcLevel(rc, pack, level)
+		results = append(results, levelRes)
+		md.WriteString(row)
+
+		time.Sleep(concSettleDelay)
+	}
+
+	return ScenarioResult{JSON: results, Markdown: md.String()}, nil
+}
+
+// runConcLevel boots level sandboxes concurrently from level goroutines,
+// timing wall-clock to all-ready and each goroutine's own create latency. It
+// always deletes whatever sandboxes were created (best effort). On any create
+// failure it returns a failed-level record and a note to stderr rather than
+// aborting the bench (bench-v2-spec.md §6.5). It returns the JSON value for
+// this level and the rendered Markdown table row.
+func runConcLevel(rc *runContext, pack string, level int) (any, string) {
+	type createOutcome struct {
+		createMs float64
+		id       string
+		err      error
+	}
+	outcomes := make([]createOutcome, level)
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < level; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			t0 := time.Now()
+			id, err := rc.Client.Create(rc.Ctx, pack)
+			outcomes[idx] = createOutcome{createMs: timeMs(t0), id: id, err: err}
+		}(i)
+	}
+	wg.Wait()
+	wallMs := timeMs(start)
+
+	ids := make([]string, 0, level)
+	samples := make([]float64, 0, level)
+	var firstErr error
+	for _, o := range outcomes {
+		if o.err != nil {
+			if firstErr == nil {
+				firstErr = o.err
+			}
+			continue
+		}
+		ids = append(ids, o.id)
+		samples = append(samples, o.createMs)
+	}
+
+	// Best-effort cleanup of every sandbox that did come up, even on a
+	// partially-failed level, so a recorded failure never leaks VMs.
+	for _, id := range ids {
+		_ = rc.Client.Delete(rc.Ctx, id)
+	}
+
+	if firstErr != nil {
+		fmt.Fprintf(os.Stderr, "note: conc-sweep level %d had a create failure: %v (recorded, continuing)\n", level, firstErr)
+		row := fmt.Sprintf("| %d | — | — | — | — | failed: %v |\n", level, firstErr)
+		return concLevelFailed{Level: level, Failed: true, Error: firstErr.Error()}, row
+	}
+
+	st := NewStats(samples)
+	perSec := 0.0
+	if wallMs > 0 {
+		perSec = float64(level) / (wallMs / 1000.0)
+	}
+	res := ConcLevelResult{
+		Level:           level,
+		WallMs:          wallMs,
+		PerSandbox:      st,
+		SandboxesPerSec: perSec,
+	}
+	row := fmt.Sprintf("| %d | %s | %s | %s | %s | %.1f /s |\n",
+		level, FormatMs(wallMs), FormatMs(st.P50Ms),
+		FormatGatedMs(st.P95Ms), FormatGatedMs(st.P99Ms), perSec)
+	return res, row
 }
 
 // vsockOverheadLine renders the "API - guest" vsock-overhead derivation
