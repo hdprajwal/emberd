@@ -48,8 +48,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 }
 
 const (
-	maxCreateBody = 4 << 10  // 4 KiB — language_pack name only
-	maxExecBody   = 1 << 20  // 1 MiB — code + stdin
+	maxCreateBody = 4 << 10 // 4 KiB — language_pack name only
+	maxExecBody   = 1 << 20 // 1 MiB — code + stdin
 )
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
