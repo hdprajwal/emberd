@@ -3,9 +3,36 @@
 // Usage:
 //
 //	./emberd &
-//	go run ./bench [-addr 127.0.0.1:7777] [-cold N] [-exec N] [-conc N]
+//	go run ./bench [-addr 127.0.0.1:7777] [-cold N] [-exec N] [-conc N] [-boot-path LABEL]
 //
 // Outputs a Markdown table to stdout and raw JSON to bench/results.json.
+//
+// # Boot paths
+//
+// The Create latency the bench measures is entirely a function of how the
+// daemon is configured — the bench itself just drives POST /sandboxes. The
+// -boot-path flag is only a label written into the JSON env block; you select
+// the actual path by the daemon flags you start it with. Run each mode against
+// its own freshly-started daemon (the daemon flags land in cmd/emberd):
+//
+//	# 1. cold — no pool, no snapshot: every Create is a full ~400 ms cold boot.
+//	#    A throwaway empty snapshot-dir guarantees no snapshot is registered at
+//	#    start; -skip-warm keeps New() from building one. (A lazy background
+//	#    build still kicks off after the first Create — see docs/benchmarks.md
+//	#    for the caveat and how the numbers were captured cleanly.)
+//	SNAP=$(mktemp -d)
+//	./bin/emberd -pool-size=-1 -skip-warm -snapshot-dir="$SNAP" &
+//	go run ./bench -boot-path cold
+//
+//	# 2. restore — pool disabled, snapshot warmed at start: every Create
+//	#    restores directly from the template snapshot (~15–30 ms).
+//	./bin/emberd -pool-size=-1 &
+//	go run ./bench -boot-path restore
+//
+//	# 3. pool — default warm pool (size 3): every Create pops a pre-warmed VM
+//	#    (guest-side <5 ms; wall time is dominated by HTTP + teardown).
+//	./bin/emberd &
+//	go run ./bench -boot-path pool
 package main
 
 import (
@@ -30,6 +57,7 @@ func main() {
 	coldN := flag.Int("cold", 15, "cold-boot iterations")
 	execN := flag.Int("exec", 60, "exec iterations (single warm sandbox)")
 	concN := flag.Int("conc", 8, "concurrent-create parallelism")
+	bootPath := flag.String("boot-path", "cold", "boot-path label for the JSON env block: cold | restore | pool")
 	flag.Parse()
 
 	baseURL = "http://" + *addr
@@ -46,7 +74,7 @@ func main() {
 	concWall, concSamples := concurrentCreateBench(*concN)
 
 	binSizes := binarySizes()
-	env := captureEnv()
+	env := captureEnv(*bootPath)
 
 	results := Results{
 		Env:             env,
@@ -203,7 +231,9 @@ func stats(samples []time.Duration) Stats {
 	copy(cp, samples)
 	sort.Slice(cp, func(i, j int) bool { return cp[i] < cp[j] })
 
-	ms := func(d time.Duration) float64 { return float64(d.Milliseconds()) }
+	// Microsecond-derived so sub-millisecond samples (e.g. warm-pool-hit creates)
+	// report an honest fractional value instead of truncating to 0 ms.
+	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000.0 }
 	pct := func(p float64) float64 {
 		idx := int(p/100*float64(len(cp)-1) + 0.5)
 		if idx >= len(cp) {
@@ -224,28 +254,44 @@ func stats(samples []time.Duration) Stats {
 // --- environment capture ---
 
 type Env struct {
-	OS              string `json:"os"`
-	Arch            string `json:"arch"`
-	CPUModel        string `json:"cpu_model"`
-	CPUCores        int    `json:"cpu_cores"`
-	FirecrackerVer  string `json:"firecracker_version"`
-	GuestRAMMiB     int    `json:"guest_ram_mib"`
-	GuestVCPUs      int    `json:"guest_vcpus"`
-	LanguagePack    string `json:"language_pack"`
-	BootPath        string `json:"boot_path"`
+	OS             string `json:"os"`
+	Arch           string `json:"arch"`
+	CPUModel       string `json:"cpu_model"`
+	CPUCores       int    `json:"cpu_cores"`
+	FirecrackerVer string `json:"firecracker_version"`
+	GuestRAMMiB    int    `json:"guest_ram_mib"`
+	GuestVCPUs     int    `json:"guest_vcpus"`
+	LanguagePack   string `json:"language_pack"`
+	BootPath       string `json:"boot_path"`
 }
 
-func captureEnv() Env {
+func captureEnv(bootPath string) Env {
 	return Env{
-		OS:           runtime.GOOS,
-		Arch:         runtime.GOARCH,
-		CPUModel:     cpuModel(),
-		CPUCores:     runtime.NumCPU(),
+		OS:             runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		CPUModel:       cpuModel(),
+		CPUCores:       runtime.NumCPU(),
 		FirecrackerVer: firecrackerVersion(),
-		GuestRAMMiB:  256,
-		GuestVCPUs:   1,
-		LanguagePack: "python (python3)",
-		BootPath:     "v0.1 cold boot (no snapshot)",
+		GuestRAMMiB:    256,
+		GuestVCPUs:     1,
+		LanguagePack:   "python (python3)",
+		BootPath:       bootPathLabel(bootPath),
+	}
+}
+
+// bootPathLabel expands the short -boot-path selector into the descriptive
+// string recorded in the JSON env block. Unknown values pass through verbatim
+// so the label is never silently wrong.
+func bootPathLabel(mode string) string {
+	switch mode {
+	case "cold":
+		return "cold boot (no snapshot, no pool)"
+	case "restore":
+		return "snapshot restore (pool disabled)"
+	case "pool":
+		return "warm pool hit (pre-warmed VM)"
+	default:
+		return mode
 	}
 }
 
@@ -344,7 +390,7 @@ func printTable(r Results) {
 	fmt.Printf("| Metric | P50 | P95 | P99 | Min | Max | N |\n")
 	fmt.Printf("|---|---|---|---|---|---|---|\n")
 	row := func(label string, s Stats) {
-		fmt.Printf("| %s | %.0f ms | %.0f ms | %.0f ms | %.0f ms | %.0f ms | %d |\n",
+		fmt.Printf("| %s | %.2f ms | %.2f ms | %.2f ms | %.2f ms | %.2f ms | %d |\n",
 			label, s.P50, s.P95, s.P99, s.Min, s.Max, s.N)
 	}
 	row("Cold boot (`POST /sandboxes`)", r.ColdBootMs)
