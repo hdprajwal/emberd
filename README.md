@@ -177,6 +177,10 @@ emberd-init (guest PID 1)
     |-- returns stdout / stderr / exit_code
 ```
 
+## Performance
+
+Full benchmark methodology and per-metric numbers — the seven measured scenarios (cold boot, time-to-first-result, warm exec, workload matrix, concurrency sweep, churn, and per-sandbox memory) — live in the [benchmarks doc](docs/benchmarks.md).
+
 ## Repo layout
 
 ```
