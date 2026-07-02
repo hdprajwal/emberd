@@ -8,52 +8,52 @@
     "guest_ram_mib": 256,
     "guest_vcpus": 1,
     "language_pack": "python (python3)",
-    "boot_path": "v0.1 cold boot (no snapshot)"
+    "boot_path": "snapshot restore (pool disabled)"
   },
   "binary_kb": {
-    "emberd_kb": 14085,
-    "emberd_init_kb": 3970
+    "emberd_kb": 14205,
+    "emberd_init_kb": 4002
   },
   "cold_boot_ms": {
-    "n": 15,
-    "p50_ms": 408,
-    "p95_ms": 426,
-    "p99_ms": 441,
-    "min_ms": 393,
-    "max_ms": 441
+    "n": 30,
+    "p50_ms": 17.339,
+    "p95_ms": 21.561,
+    "p99_ms": 23.293,
+    "min_ms": 16.226,
+    "max_ms": 23.293
   },
   "exec_create_ms": {
     "n": 1,
-    "p50_ms": 401,
-    "p95_ms": 401,
-    "p99_ms": 401,
-    "min_ms": 401,
-    "max_ms": 401
+    "p50_ms": 16.288,
+    "p95_ms": 16.288,
+    "p99_ms": 16.288,
+    "min_ms": 16.288,
+    "max_ms": 16.288
   },
   "exec_api_ms": {
-    "n": 60,
-    "p50_ms": 13,
-    "p95_ms": 17,
-    "p99_ms": 18,
-    "min_ms": 12,
-    "max_ms": 71
+    "n": 40,
+    "p50_ms": 14.409,
+    "p95_ms": 22.513,
+    "p99_ms": 40.832,
+    "min_ms": 13.267,
+    "max_ms": 40.832
   },
   "exec_guest_ms": {
-    "n": 60,
-    "p50_ms": 12,
-    "p95_ms": 15,
-    "p99_ms": 17,
-    "min_ms": 11,
-    "max_ms": 70
+    "n": 40,
+    "p50_ms": 13,
+    "p95_ms": 21,
+    "p99_ms": 39,
+    "min_ms": 12,
+    "max_ms": 39
   },
-  "conc_wall_ms": 623,
-  "conc_samples": 8,
+  "conc_wall_ms": 21,
+  "conc_samples": 6,
   "conc_per_sample_ms": {
-    "n": 8,
-    "p50_ms": 607,
-    "p95_ms": 623,
-    "p99_ms": 623,
-    "min_ms": 587,
-    "max_ms": 623
+    "n": 6,
+    "p50_ms": 19.605,
+    "p95_ms": 21.051,
+    "p99_ms": 21.051,
+    "min_ms": 17.872,
+    "max_ms": 21.051
   }
 }

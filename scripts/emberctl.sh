@@ -67,7 +67,9 @@ cmd_inspect() {
   local log="$WORKDIR/$id/vm.log"
   if [ -f "$log" ]; then
     printf '%sboot log (%s):%s\n' "$BOLD" "$log" "$RESET"
-    grep -m1 "Linux version" "$log" | sed 's/^/  /' || true
+    # Cold boot logs the kernel banner; a snapshot-restored VM logs the
+    # Firecracker snapshot-load request instead. Show whichever is present.
+    grep -m1 -E "Linux version|/snapshot/load" "$log" | sed 's/^/  /' || true
   fi
 }
 
@@ -118,7 +120,11 @@ cmd_test() {
 
   printf '%s==> inspect%s\n' "$BOLD" "$RESET"
   pgrep -af "id $fc" | grep -qv ' pgrep ' && ok "microVM process running" || bad "no microVM process"
-  grep -q "Linux version" "$WORKDIR/$id/vm.log" 2>/dev/null && ok "guest kernel booted" || bad "no kernel boot in vm.log"
+  # A cold-booted VM logs "Linux version"; a fast-boot VM restored from a
+  # snapshot (warm pool / restore path) never re-boots the kernel — its fresh
+  # vm.log instead carries the Firecracker "/snapshot/load" request. Accept
+  # either as proof the guest came up.
+  grep -qE "Linux version|/snapshot/load" "$WORKDIR/$id/vm.log" 2>/dev/null && ok "guest up (cold boot or snapshot restore)" || bad "no kernel boot or snapshot restore in vm.log"
 
   printf '%s==> exec%s\n' "$BOLD" "$RESET"
   # Wait for the guest agent to come up, then run real code.

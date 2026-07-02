@@ -29,8 +29,9 @@ func main() {
 	// reaping orphaned children before serving. Run on the host (tests, manual
 	// runs) skips both — there is no rootfs to build and no PID 1 duty.
 	interp := *interpreter
+	isPID1 := os.Getpid() == 1
 	var reaper *childReaper
-	if os.Getpid() == 1 {
+	if isPID1 {
 		if err := bootstrapPID1(); err != nil {
 			log.Fatalf("guest bootstrap: %v", err)
 		}
@@ -46,6 +47,13 @@ func main() {
 	}
 
 	handle := func(req proto.ExecRequest) proto.ExecResult {
+		// Only PID 1 is the real guest init; a restored microVM wakes with the
+		// snapshot's stale wall clock, so step it to the host's before running
+		// the code. Host-side runs (Getpid() != 1) must never touch the machine
+		// clock.
+		if isPID1 {
+			maybeSyncClock(req.HostTimeUnixNano)
+		}
 		return runExec(context.Background(), reaper, interp, req)
 	}
 	if err := serveVsock(uint32(*port), handle); err != nil {
