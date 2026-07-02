@@ -39,11 +39,19 @@ type ExecRequest struct {
 // Error is non-empty only when the guest agent failed to run the request at
 // all (e.g. spawning the interpreter); a non-zero ExitCode from the user's code
 // is a normal result, not an Error.
+//
+// DurationMs and DurationUs both report the guest-measured wall time of the
+// exec, in whole milliseconds and whole microseconds respectively, from a
+// single clock reading so the two never disagree. DurationMs is kept for
+// compatibility with older hosts; DurationUs (omitted when zero) gives the
+// finer resolution newer hosts prefer. The additive DurationUs field means old
+// init + new host and new init + old host stay wire-compatible.
 type ExecResult struct {
 	Stdout     string `json:"stdout"`
 	Stderr     string `json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int    `json:"duration_ms"`
+	DurationUs int64  `json:"duration_us,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 

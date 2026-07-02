@@ -48,6 +48,32 @@ func TestRunExecNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestRunExecDuration(t *testing.T) {
+	// The guest reports both DurationMs (whole ms, for old hosts) and DurationUs
+	// (whole µs). They come from one clock reading, so ms must equal us/1000.
+	cases := []struct {
+		name string
+		code string
+	}{
+		{name: "fast", code: "pass"},
+		{name: "sleeps ~50ms", code: "import time; time.sleep(0.05)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runExec(context.Background(), nil, "python3", proto.ExecRequest{Code: tc.code})
+			if res.Error != "" {
+				t.Fatalf("unexpected Error: %q", res.Error)
+			}
+			if res.DurationUs <= 0 {
+				t.Fatalf("DurationUs = %d, want > 0", res.DurationUs)
+			}
+			if got, want := res.DurationMs, int(res.DurationUs/1000); got != want {
+				t.Fatalf("DurationMs = %d, want %d (from DurationUs %d)", got, want, res.DurationUs)
+			}
+		})
+	}
+}
+
 func TestRunExecTimeout(t *testing.T) {
 	res := runExec(context.Background(), nil, "python3", proto.ExecRequest{
 		Code:      "import time; time.sleep(5)",

@@ -2,6 +2,8 @@ package proto
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -28,6 +30,72 @@ func TestMessageRoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("round trip mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestExecResultRoundTrip(t *testing.T) {
+	cases := []struct {
+		name       string
+		result     ExecResult
+		wantUsWire bool // whether duration_us should appear in the JSON
+	}{
+		{
+			name:       "both durations set",
+			result:     ExecResult{Stdout: "out", Stderr: "err", ExitCode: 0, DurationMs: 12, DurationUs: 12847},
+			wantUsWire: true,
+		},
+		{
+			name:       "sub-millisecond has us but zero ms",
+			result:     ExecResult{Stdout: "quick", ExitCode: 0, DurationMs: 0, DurationUs: 731},
+			wantUsWire: true,
+		},
+		{
+			name:       "zero us omitted from wire",
+			result:     ExecResult{Stdout: "old-init", ExitCode: 0, DurationMs: 5, DurationUs: 0},
+			wantUsWire: false,
+		},
+		{
+			name:       "agent error preserves durations",
+			result:     ExecResult{ExitCode: -1, Error: "boom", DurationMs: 1, DurationUs: 1200},
+			wantUsWire: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+
+			go func() {
+				if err := WriteMessage(client, tc.result); err != nil {
+					t.Errorf("WriteMessage: %v", err)
+				}
+			}()
+
+			var got ExecResult
+			if err := ReadMessage(server, &got); err != nil {
+				t.Fatalf("ReadMessage: %v", err)
+			}
+			if got != tc.result {
+				t.Fatalf("round trip mismatch:\n got %+v\nwant %+v", got, tc.result)
+			}
+
+			// Confirm the omitempty behavior on the wire so old hosts that
+			// never read duration_us stay unaffected.
+			payload, err := json.Marshal(tc.result)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			gotUsWire := bytes.Contains(payload, []byte(`"duration_us"`))
+			if gotUsWire != tc.wantUsWire {
+				t.Fatalf("duration_us present = %v, want %v (json %s)", gotUsWire, tc.wantUsWire, payload)
+			}
+			// duration_ms is always present, even when zero.
+			if !bytes.Contains(payload, []byte(`"duration_ms"`)) {
+				t.Fatalf("duration_ms missing from wire: %s", payload)
+			}
+		})
 	}
 }
 
