@@ -42,9 +42,19 @@ func NewServer(mgr sandbox.Manager) *Server {
 
 // Register attaches the sandbox routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /info", s.handleInfo)
 	mux.HandleFunc("POST /sandboxes", s.handleCreate)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExec)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDelete)
+}
+
+// handleInfo returns the daemon's resolved sandbox configuration (guest RAM,
+// vCPUs, boot path, packs, work dir) as JSON so tooling such as the benchmark
+// harness records real guest facts instead of hardcoding them. The body is
+// small and static, so no size limit applies; there is no auth, matching the
+// other routes and the same bind address.
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.Info())
 }
 
 const (

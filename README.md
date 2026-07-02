@@ -122,7 +122,16 @@ curl -X POST localhost:7777/sandboxes/<id>/exec \
 
 # Destroy the sandbox
 curl -X DELETE localhost:7777/sandboxes/<id>
+
+# Inspect the daemon's resolved config (guest RAM/vCPUs, boot path, packs, work dir)
+curl localhost:7777/info
+# -> {"guest_ram_mib":256,"guest_vcpus":1,"boot_path":"warm-pool",
+#     "packs":["python","shell"],"work_dir":"/tmp/emberd"}
 ```
+
+`GET /info` reports the resolved sandbox configuration as JSON. `boot_path` is
+the fast-boot strategy a create takes under the current config: `warm-pool`
+when the pre-warmed pool is enabled, `snapshot-restore` when it is disabled.
 
 ## Language packs
 
