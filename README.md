@@ -179,7 +179,7 @@ emberd-init (guest PID 1)
 
 ## Performance
 
-Full benchmark methodology and per-metric numbers — the seven measured scenarios (cold boot, time-to-first-result, warm exec, workload matrix, concurrency sweep, churn, and per-sandbox memory) — live in the [benchmarks doc](docs/benchmarks.md).
+The seven measured scenarios (cold boot, time-to-first-result, warm exec, workload matrix, concurrency sweep, churn, and per-sandbox memory) and how to run them are documented in the `bench/` package — see the header comment in `bench/main.go`. The latest full-run raw numbers are in `bench/results.json`.
 
 ## Repo layout
 
