@@ -352,6 +352,146 @@ func TestRestoreIsolation(t *testing.T) {
 	}
 }
 
+// TestCreateUsesRestore proves Create() takes the fast restore path once a
+// snapshot exists. The manager warms on start (default), so a template snapshot
+// is already registered; three back-to-back Create() calls must each land well
+// under the cold-boot cost (< 200 ms), each run real code, and each tear down
+// cleanly.
+func TestCreateUsesRestore(t *testing.T) {
+	m := newIntegrationManager(t, nil)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		sb, err := m.Create(ctx, "python")
+		if err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+		latency := time.Since(start)
+		t.Logf("create %d latency: %s", i, latency)
+		if latency >= 200*time.Millisecond {
+			t.Fatalf("Create %d took %s, want < 200ms (should restore from snapshot, not cold boot)", i, latency)
+		}
+
+		res, err := m.Exec(ctx, sb.ID, proto.ExecRequest{Code: "print(6*7)"})
+		if err != nil {
+			t.Fatalf("Exec %d: %v", i, err)
+		}
+		if res.ExitCode != 0 || res.Stdout != "42\n" {
+			t.Fatalf("Create %d exec: exit=%d stdout=%q stderr=%q", i, res.ExitCode, res.Stdout, res.Stderr)
+		}
+
+		if err := m.Delete(ctx, sb.ID); err != nil {
+			t.Fatalf("Delete %d: %v", i, err)
+		}
+	}
+}
+
+// TestRestoreFallbackToColdBoot corrupts the registered snapshot (truncates its
+// memory image to zero bytes) and asserts Create() still succeeds: acquire must
+// log the restore failure and fall back to a cold boot rather than surfacing the
+// error. The > 300 ms latency proves the slow path actually ran, and the exec
+// proves the fallback VM is fully functional.
+func TestRestoreFallbackToColdBoot(t *testing.T) {
+	m := newIntegrationManager(t, nil)
+	ctx := context.Background()
+
+	m.snapshotMu.RLock()
+	snap, ok := m.snapshots["python"]
+	m.snapshotMu.RUnlock()
+	if !ok {
+		t.Fatalf("expected a registered snapshot after warm-on-start New")
+	}
+	if err := os.Truncate(snap.memFile, 0); err != nil {
+		t.Fatalf("truncate snapshot mem file: %v", err)
+	}
+
+	start := time.Now()
+	sb, err := m.Create(ctx, "python")
+	if err != nil {
+		t.Fatalf("Create must still succeed via cold-boot fallback: %v", err)
+	}
+	latency := time.Since(start)
+	t.Logf("fallback create latency: %s", latency)
+	if latency <= 300*time.Millisecond {
+		t.Fatalf("Create took %s, want > 300ms (a corrupt snapshot should force a cold boot)", latency)
+	}
+
+	res, err := m.Exec(ctx, sb.ID, proto.ExecRequest{Code: "print(6*7)"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "42\n" {
+		t.Fatalf("fallback exec: exit=%d stdout=%q stderr=%q", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	if err := m.Delete(ctx, sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
+// TestLazySnapshotBuild proves a daemon started with SkipWarmOnStart self-heals
+// to the fast path. With no snapshot on disk the first Create cold boots (slow)
+// but succeeds and kicks off a one-time background build; once that build
+// publishes and registers the snapshot, a subsequent Create restores fast.
+func TestLazySnapshotBuild(t *testing.T) {
+	m := newIntegrationManager(t, func(c *Config) { c.SkipWarmOnStart = true })
+	ctx := context.Background()
+
+	// First Create: no snapshot yet, so it must cold boot (slow) and succeed.
+	start := time.Now()
+	sb1, err := m.Create(ctx, "python")
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	firstLatency := time.Since(start)
+	t.Logf("first (cold) create latency: %s", firstLatency)
+	if firstLatency <= 300*time.Millisecond {
+		t.Fatalf("first Create took %s, expected a cold boot > 300ms", firstLatency)
+	}
+
+	hash, err := m.artifactHash("python")
+	if err != nil {
+		t.Fatalf("artifactHash: %v", err)
+	}
+	snapDir := filepath.Join(m.cfg.SnapshotDir, "python", hash)
+
+	// Poll for the background build to both land on disk and register in
+	// m.snapshots (the signal Create actually reads).
+	registered := func() bool {
+		m.snapshotMu.RLock()
+		_, ok := m.snapshots["python"]
+		m.snapshotMu.RUnlock()
+		return ok
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for !(snapshotComplete(snapDir) && registered()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("lazy snapshot for python did not appear/register within 30s (dir %s)", snapDir)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Second Create now takes the fast restore path.
+	start = time.Now()
+	sb2, err := m.Create(ctx, "python")
+	if err != nil {
+		t.Fatalf("second Create: %v", err)
+	}
+	secondLatency := time.Since(start)
+	t.Logf("second (restore) create latency: %s", secondLatency)
+	if secondLatency >= 200*time.Millisecond {
+		t.Fatalf("second Create took %s, want < 200ms (should restore from the lazily built snapshot)", secondLatency)
+	}
+
+	if err := m.Delete(ctx, sb1.ID); err != nil {
+		t.Fatalf("Delete sb1: %v", err)
+	}
+	if err := m.Delete(ctx, sb2.ID); err != nil {
+		t.Fatalf("Delete sb2: %v", err)
+	}
+}
+
 // TestColdBootExec exercises the real cold-boot path end to end: it boots a
 // python microVM, runs a trivial exec, and tears it down. It also asserts the
 // guest vsock UDS lives at "v.sock" inside the sandbox's own work dir, proving

@@ -186,6 +186,23 @@ type Manager struct {
 	// read on the restore path. Guarded by snapshotMu.
 	snapshotMu sync.RWMutex
 	snapshots  map[string]snapshotPaths
+
+	// pools holds pre-warmed VMs per pack. It is nil here — the warm pool and its
+	// refiller land in a later task — so acquire's pool pop is a guarded no-op
+	// (a receive on a nil channel would block forever, so the nil check matters).
+	pools map[string]chan *vm
+
+	// refillCh carries pack names that want their pool topped back up. Create()
+	// does a non-blocking send after each acquire; the refiller that consumes it
+	// lands with the pool in a later task. Buffered (len(Packs)*4) so unconsumed
+	// signals never block Create while nothing is draining the channel.
+	refillCh chan string
+
+	// buildOnce guards the lazy background snapshot build: acquire's no-snapshot
+	// path kicks off createSnapshot exactly once per pack so concurrent cold
+	// boots never race to build the same snapshot. Guarded by buildMu.
+	buildMu   sync.Mutex
+	buildOnce map[string]*sync.Once
 }
 
 // snapshotPaths locates a pack's template snapshot on disk.
@@ -228,6 +245,8 @@ func New(cfg Config) (*Manager, error) {
 		vms:       make(map[string]*vm),
 		nextCID:   firstGuestCID,
 		snapshots: make(map[string]snapshotPaths),
+		refillCh:  make(chan string, len(cfg.Packs)*4),
+		buildOnce: make(map[string]*sync.Once),
 	}
 
 	// Register reusable snapshots, clean stale ones, and (unless warm-on-start is
@@ -247,7 +266,7 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		return nil, fmt.Errorf("%w: %q", sandbox.ErrUnknownPack, languagePack)
 	}
 
-	v, err := m.coldBoot(ctx, languagePack)
+	v, err := m.acquire(ctx, languagePack)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +274,14 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	m.mu.Lock()
 	m.vms[v.sb.ID] = v
 	m.mu.Unlock()
+
+	// Signal the pool refiller (lands with the pool in a later task) to top this
+	// pack back up. Non-blocking so a full or absent consumer never stalls
+	// Create; refillCh is buffered so signals are only dropped once it fills.
+	select {
+	case m.refillCh <- languagePack:
+	default:
+	}
 
 	return v.sb, nil
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
@@ -207,6 +208,88 @@ func (m *Manager) createSnapshot(ctx context.Context, packName string) error {
 	}
 	m.snapshotMu.Unlock()
 	return nil
+}
+
+// acquire returns a live, unregistered *vm for packName by the fastest path
+// available, per the fast-boot spec's "Create / acquire" flow:
+//
+//   - Pool pop: if a pool exists for the pack, a non-blocking receive claims a
+//     pre-warmed VM. The pool and its refiller land in a later task, so m.pools
+//     is nil here and this is a guarded no-op (a receive on a nil channel blocks
+//     forever, hence the nil guard).
+//   - Snapshot restore: if a template snapshot is registered, restore from it.
+//     A restore failure must never fail a Create it can route around, so it logs
+//     and falls back to a cold boot rather than surfacing the error.
+//   - Cold boot + lazy build: with no snapshot yet, cold boot now and kick off a
+//     one-time background snapshot build so subsequent creates take the fast
+//     restore path. A daemon started with SkipWarmOnStart therefore self-heals.
+//
+// The caller (Create) owns registration in m.vms.
+func (m *Manager) acquire(ctx context.Context, packName string) (*vm, error) {
+	// Pool pop — no-op until the pool lands. Nil-guard the channel: a receive on
+	// a nil channel blocks forever, so this must never touch a nil pool.
+	if pool := m.pools[packName]; pool != nil {
+		select {
+		case v := <-pool:
+			if v != nil {
+				return v, nil
+			}
+		default:
+		}
+	}
+
+	m.snapshotMu.RLock()
+	_, haveSnapshot := m.snapshots[packName]
+	m.snapshotMu.RUnlock()
+
+	if haveSnapshot {
+		v, err := m.restoreFromSnapshot(ctx, packName)
+		if err == nil {
+			return v, nil
+		}
+		// Restore is best-effort: a corrupt or unreadable snapshot must not fail
+		// Create when a cold boot can still serve the request. Log and fall back.
+		m.logger.WithField("pack", packName).WithError(err).
+			Warn("snapshot restore failed; falling back to cold boot")
+		return m.coldBoot(ctx, packName)
+	}
+
+	// No snapshot registered: serve this create with a cold boot and build the
+	// template in the background so the next create is fast.
+	v, err := m.coldBoot(ctx, packName)
+	if err != nil {
+		return nil, err
+	}
+	m.buildSnapshotOnce(packName)
+	return v, nil
+}
+
+// buildSnapshotOnce kicks off createSnapshot for packName in the background
+// exactly once per pack, even under concurrent cold boots. A per-pack sync.Once
+// (fetched or created under buildMu) serializes the racers so only one goroutine
+// builds the template. A lazy build that fails is logged and its Once dropped so
+// a later cold boot retries — creates keep cold-booting until a build succeeds.
+func (m *Manager) buildSnapshotOnce(packName string) {
+	m.buildMu.Lock()
+	once, ok := m.buildOnce[packName]
+	if !ok {
+		once = &sync.Once{}
+		m.buildOnce[packName] = once
+	}
+	m.buildMu.Unlock()
+
+	go once.Do(func() {
+		// A background build outlives the triggering request, so it gets its own
+		// context rather than the caller's (which may be cancelled by then).
+		if err := m.createSnapshot(context.Background(), packName); err != nil {
+			m.logger.WithField("pack", packName).WithError(err).
+				Warn("lazy snapshot build failed; creates keep cold-booting")
+			// Drop the spent Once so the next cold boot retries the build.
+			m.buildMu.Lock()
+			delete(m.buildOnce, packName)
+			m.buildMu.Unlock()
+		}
+	})
 }
 
 // restoreFromSnapshot loads packName's registered template snapshot into a fresh
