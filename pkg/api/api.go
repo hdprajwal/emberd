@@ -23,11 +23,17 @@ type ExecRequest struct {
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
 }
 
+// ExecResponse is the JSON body returned by the exec handler. DurationMs and
+// DurationUs both report the guest-measured exec wall time (whole milliseconds
+// and whole microseconds), passed through from the proto result. DurationMs is
+// kept for older clients; DurationUs is omitted when zero and lets clients that
+// want sub-millisecond resolution use it in preference to DurationMs.
 type ExecResponse struct {
 	Stdout     string `json:"stdout"`
 	Stderr     string `json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int    `json:"duration_ms"`
+	DurationUs int64  `json:"duration_us,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -116,6 +122,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		Stderr:     res.Stderr,
 		ExitCode:   res.ExitCode,
 		DurationMs: res.DurationMs,
+		DurationUs: res.DurationUs,
 		Error:      res.Error,
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hdprajwal/emberd/pkg/proto"
@@ -13,9 +14,10 @@ import (
 )
 
 // fakeManager is a minimal sandbox.Manager stand-in for HTTP handler tests. It
-// returns a canned Info and is otherwise inert.
+// returns a canned Info and a canned exec result, and is otherwise inert.
 type fakeManager struct {
-	info sandbox.Info
+	info    sandbox.Info
+	execRes proto.ExecResult
 }
 
 func (f *fakeManager) Create(ctx context.Context, languagePack string) (*sandbox.Sandbox, error) {
@@ -23,12 +25,70 @@ func (f *fakeManager) Create(ctx context.Context, languagePack string) (*sandbox
 }
 
 func (f *fakeManager) Exec(ctx context.Context, id string, req proto.ExecRequest) (proto.ExecResult, error) {
-	return proto.ExecResult{}, nil
+	return f.execRes, nil
 }
 
 func (f *fakeManager) Delete(ctx context.Context, id string) error { return nil }
 
 func (f *fakeManager) Info() sandbox.Info { return f.info }
+
+func TestHandleExecPassesThroughDurations(t *testing.T) {
+	cases := []struct {
+		name       string
+		result     proto.ExecResult
+		wantUsWire bool // whether duration_us should appear in the JSON
+	}{
+		{
+			name:       "guest reports microseconds",
+			result:     proto.ExecResult{Stdout: "hi\n", ExitCode: 0, DurationMs: 12, DurationUs: 12847},
+			wantUsWire: true,
+		},
+		{
+			name:       "old guest omits microseconds",
+			result:     proto.ExecResult{Stdout: "hi\n", ExitCode: 0, DurationMs: 12, DurationUs: 0},
+			wantUsWire: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			NewServer(&fakeManager{execRes: tc.result}).Register(mux)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/sandboxes/sb_test/exec",
+				strings.NewReader(`{"code":"print('hi')"}`))
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			var got ExecResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if got.DurationMs != tc.result.DurationMs {
+				t.Errorf("DurationMs = %d, want %d", got.DurationMs, tc.result.DurationMs)
+			}
+			if got.DurationUs != tc.result.DurationUs {
+				t.Errorf("DurationUs = %d, want %d", got.DurationUs, tc.result.DurationUs)
+			}
+
+			// Guard the omitempty wire behavior so old clients see no new key.
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+				t.Fatalf("decode raw: %v", err)
+			}
+			if _, ok := raw["duration_us"]; ok != tc.wantUsWire {
+				t.Errorf("duration_us present = %v, want %v; body = %s", ok, tc.wantUsWire, rec.Body.String())
+			}
+			if _, ok := raw["duration_ms"]; !ok {
+				t.Errorf("duration_ms missing from body: %s", rec.Body.String())
+			}
+		})
+	}
+}
 
 func TestHandleInfo(t *testing.T) {
 	want := sandbox.Info{
