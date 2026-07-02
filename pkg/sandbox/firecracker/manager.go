@@ -32,6 +32,11 @@ type Pack struct {
 	// Interpreter is the guest-side executable that runs submitted code (e.g.
 	// "python3", "/bin/sh"). Passed to emberd-init via the kernel command line.
 	Interpreter string
+	// WarmupCode is the trivial program the template VM runs once before it is
+	// snapshotted, so every restored clone starts on the interpreter's warm
+	// (already paged-in) path. Defaulted per pack in withDefaults: a Python
+	// interpreter gets "print(1)", anything else "true".
+	WarmupCode string
 }
 
 // Config describes the host artifacts and per-sandbox machine shape. Zero
@@ -67,6 +72,22 @@ type Config struct {
 	// and start accepting on the vsock control plane before giving up and
 	// tearing the microVM down. If zero, defaults to 15s.
 	BootTimeout time.Duration
+
+	// SnapshotDir stores per-pack template snapshots, laid out as
+	// SnapshotDir/<pack>/<hash12>/{mem,state}. If empty, defaults to
+	// WorkDir/snapshots.
+	SnapshotDir string
+
+	// PoolSize is the number of pre-warmed sandboxes kept ready per pack.
+	// -1 disables the pool (Create restores directly from a snapshot); 0 means
+	// "use the default" (3). The -1 sentinel is why 0 cannot double as disable.
+	PoolSize int
+
+	// SkipWarmOnStart controls whether New() builds missing snapshots (and, once
+	// pools land, fills them) before returning. The zero value is "warm on
+	// start"; set true to defer snapshot creation to the first Create() per pack.
+	// Unit tests set it so New() needs no KVM when no snapshot exists yet.
+	SkipWarmOnStart bool
 }
 
 func (c *Config) withDefaults() error {
@@ -110,8 +131,29 @@ func (c *Config) withDefaults() error {
 	if c.WorkDir == "" {
 		c.WorkDir = filepath.Join(os.TempDir(), "emberd")
 	}
+	if c.SnapshotDir == "" {
+		c.SnapshotDir = filepath.Join(c.WorkDir, "snapshots")
+	}
+	// PoolSize == 0 means "unset" → default 3; -1 is the explicit disable
+	// sentinel and must survive defaulting untouched.
+	if c.PoolSize == 0 {
+		c.PoolSize = 3
+	}
 	if c.BootTimeout == 0 {
 		c.BootTimeout = 15 * time.Second
+	}
+	// Default each pack's warm-up snippet. A Python interpreter runs "print(1)";
+	// everything else (shells, etc.) runs "true". Map entries aren't addressable,
+	// so reassign the whole Pack value.
+	for name, p := range c.Packs {
+		if p.WarmupCode == "" {
+			if strings.Contains(p.Interpreter, "python") {
+				p.WarmupCode = "print(1)"
+			} else {
+				p.WarmupCode = "true"
+			}
+			c.Packs[name] = p
+		}
 	}
 	return nil
 }
@@ -138,6 +180,18 @@ type Manager struct {
 	mu      sync.Mutex
 	vms     map[string]*vm
 	nextCID uint32
+
+	// snapshots holds the one valid content-addressed template snapshot per pack
+	// (pack name → paths). Populated at New() from disk or by createSnapshot, and
+	// read on the restore path. Guarded by snapshotMu.
+	snapshotMu sync.RWMutex
+	snapshots  map[string]snapshotPaths
+}
+
+// snapshotPaths locates a pack's template snapshot on disk.
+type snapshotPaths struct {
+	memFile string // memory image
+	vmState string // VM state file
 }
 
 // New validates the host artifacts and returns a ready Manager.
@@ -161,15 +215,19 @@ func New(cfg Config) (*Manager, error) {
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create work dir: %w", err)
 	}
+	if err := os.MkdirAll(cfg.SnapshotDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create snapshot dir: %w", err)
+	}
 
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
 
 	return &Manager{
-		cfg:     cfg,
-		logger:  logrus.NewEntry(logger),
-		vms:     make(map[string]*vm),
-		nextCID: firstGuestCID,
+		cfg:       cfg,
+		logger:    logrus.NewEntry(logger),
+		vms:       make(map[string]*vm),
+		nextCID:   firstGuestCID,
+		snapshots: make(map[string]snapshotPaths),
 	}, nil
 }
 
