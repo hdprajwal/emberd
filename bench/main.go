@@ -159,6 +159,10 @@ func main() {
 		OutDir:       *out,
 	}
 
+	if err := validatePacks(cfg.Packs); err != nil {
+		fatalf("%v", err)
+	}
+
 	selected, err := selectScenarios(cfg.Run)
 	if err != nil {
 		fatalf("%v", err)
@@ -239,6 +243,17 @@ func parseConcLevels(s string) ([]int, error) {
 		levels = append(levels, n)
 	}
 	return levels, nil
+}
+
+// validatePacks rejects an empty -packs list. An empty list — from -packs ""
+// or -packs , via splitCSV — would otherwise index Packs[0] out of range deep
+// inside the workloads/conc-sweep/churn/memory scenarios; this fails cleanly at
+// flag-validation time like every other bad-input path.
+func validatePacks(packs []string) error {
+	if len(packs) == 0 {
+		return fmt.Errorf("no language packs selected — -packs must name at least one pack")
+	}
+	return nil
 }
 
 // splitCSV splits s on commas, trims whitespace, and drops empty elements.

@@ -68,6 +68,25 @@ func TestParseConcLevelsEmpty(t *testing.T) {
 	}
 }
 
+func TestValidatePacks(t *testing.T) {
+	if err := validatePacks([]string{"python"}); err != nil {
+		t.Errorf("validatePacks([python]): unexpected error %v", err)
+	}
+}
+
+func TestValidatePacksEmpty(t *testing.T) {
+	// -packs "" and -packs "," both yield an empty slice via splitCSV; the
+	// guard must reject them and name the flag rather than letting Packs[0]
+	// panic deep inside a scenario.
+	for _, in := range []string{"", ","} {
+		if err := validatePacks(splitCSV(in)); err == nil {
+			t.Errorf("validatePacks(splitCSV(%q)): want error, got nil", in)
+		} else if !strings.Contains(err.Error(), "-packs") {
+			t.Errorf("validatePacks error %q should name the -packs flag", err.Error())
+		}
+	}
+}
+
 func TestSplitCSV(t *testing.T) {
 	got := splitCSV(" a, b ,,c")
 	want := []string{"a", "b", "c"}
