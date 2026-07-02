@@ -634,13 +634,15 @@ func (m *Manager) runRefiller() {
 }
 
 // refillPool restores VMs into packName's pool until it holds PoolSize of them.
-// Each restore is pushed with a non-blocking send; if the pool is already full
-// (a concurrent refill, or a Create that returned a VM between the length check
-// and the push) the surplus VM is torn down rather than leaked. A restore error
-// logs and abandons this round — the next claim re-signals refillCh, so the pool
-// heals on the following Create without this goroutine spinning on a bad
-// snapshot. Called by runRefiller and, during warm-on-start, by New before the
-// refiller exists (so no concurrent pusher on that path).
+// Each restore is pushed with a non-blocking send. The default branch that tears
+// down a surplus VM is a defensive guard: it is unreachable under the current
+// design, where refillPool's only callers are New (pre-refiller, warm-on-start)
+// and the single refiller goroutine — never concurrently, so this goroutine is
+// the pool's sole pusher and the length check above guarantees room for the
+// send. It is kept cheap in case a future concurrent pusher appears, so a
+// surplus VM is torn down rather than leaked. A restore error logs and abandons
+// this round — the next claim re-signals refillCh, so the pool heals on the
+// following Create without this goroutine spinning on a bad snapshot.
 func (m *Manager) refillPool(packName string) {
 	pool := m.pools[packName]
 	if pool == nil {

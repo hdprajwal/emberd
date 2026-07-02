@@ -56,13 +56,16 @@ func main() {
 	defer cancel()
 
 	// Ordering is load-bearing: drain the HTTP server FIRST, then tear down the
-	// manager. srv.Shutdown blocks until every in-flight request handler has
-	// returned, so once it completes no Create can still be running. Only then is
-	// it safe to call mgr.Close(), which snapshots m.vms and deletes each VM: a
-	// Create that raced Close could otherwise register (and leak) a Firecracker
-	// process after Close had already scanned the VM set. Closing the server up
-	// front removes that race for the daemon path entirely.
-	_ = srv.Shutdown(shutdownCtx)
+	// manager. When srv.Shutdown returns nil, every in-flight request handler has
+	// returned, so no Create can still be running and it is safe to call
+	// mgr.Close(), which snapshots m.vms and deletes each VM: a Create that raced
+	// Close could otherwise register (and leak) a Firecracker process after Close
+	// had already scanned the VM set. If Shutdown instead hits the 10s deadline it
+	// returns an error with handlers still in flight, so mgr.Close() below may race
+	// them — log that so the leak window is visible rather than silent.
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown incomplete (%v); manager close may race in-flight creates", err)
+	}
 
 	if err := mgr.Close(); err != nil {
 		log.Printf("manager shutdown: %v", err)
