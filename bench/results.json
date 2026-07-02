@@ -1,0 +1,59 @@
+{
+  "env": {
+    "os": "linux",
+    "arch": "amd64",
+    "cpu_model": "Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz",
+    "cpu_cores": 8,
+    "firecracker_version": "Firecracker v1.15.1",
+    "guest_ram_mib": 256,
+    "guest_vcpus": 1,
+    "language_pack": "python (python3)",
+    "boot_path": "v0.1 cold boot (no snapshot)"
+  },
+  "binary_kb": {
+    "emberd_kb": 14085,
+    "emberd_init_kb": 3970
+  },
+  "cold_boot_ms": {
+    "n": 15,
+    "p50_ms": 408,
+    "p95_ms": 426,
+    "p99_ms": 441,
+    "min_ms": 393,
+    "max_ms": 441
+  },
+  "exec_create_ms": {
+    "n": 1,
+    "p50_ms": 401,
+    "p95_ms": 401,
+    "p99_ms": 401,
+    "min_ms": 401,
+    "max_ms": 401
+  },
+  "exec_api_ms": {
+    "n": 60,
+    "p50_ms": 13,
+    "p95_ms": 17,
+    "p99_ms": 18,
+    "min_ms": 12,
+    "max_ms": 71
+  },
+  "exec_guest_ms": {
+    "n": 60,
+    "p50_ms": 12,
+    "p95_ms": 15,
+    "p99_ms": 17,
+    "min_ms": 11,
+    "max_ms": 70
+  },
+  "conc_wall_ms": 623,
+  "conc_samples": 8,
+  "conc_per_sample_ms": {
+    "n": 8,
+    "p50_ms": 607,
+    "p95_ms": 623,
+    "p99_ms": 623,
+    "min_ms": 587,
+    "max_ms": 623
+  }
+}
