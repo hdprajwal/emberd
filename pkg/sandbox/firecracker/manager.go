@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -172,6 +173,12 @@ type vm struct {
 // (hypervisor, local, host).
 const firstGuestCID uint32 = 3
 
+// ErrManagerClosed is returned by Create after the Manager has been closed. A
+// closed manager's refillCh is closed, so a create that tried to signal the
+// refiller would panic; Create checks for closure first and returns this
+// instead.
+var ErrManagerClosed = errors.New("firecracker manager is closed")
+
 // Manager boots and tears down Firecracker microVMs.
 type Manager struct {
 	cfg    Config
@@ -187,16 +194,34 @@ type Manager struct {
 	snapshotMu sync.RWMutex
 	snapshots  map[string]snapshotPaths
 
-	// pools holds pre-warmed VMs per pack. It is nil here — the warm pool and its
-	// refiller land in a later task — so acquire's pool pop is a guarded no-op
-	// (a receive on a nil channel would block forever, so the nil check matters).
+	// pools holds pre-warmed VMs per pack (pack name → ready VMs). It is created
+	// in New() and, per the concurrency story, is IMMUTABLE thereafter: every
+	// pack's channel is allocated before any goroutine exists and the map is
+	// never written again — only the channels inside it are pushed to / popped
+	// from. That lets acquire read m.pools[pack] lock-free. When the pool is
+	// disabled (PoolSize < 1) the map stays nil, so acquire's pool pop is a
+	// guarded no-op (a receive on a nil channel would block forever).
 	pools map[string]chan *vm
 
 	// refillCh carries pack names that want their pool topped back up. Create()
-	// does a non-blocking send after each acquire; the refiller that consumes it
-	// lands with the pool in a later task. Buffered (len(Packs)*4) so unconsumed
-	// signals never block Create while nothing is draining the channel.
+	// does a non-blocking send after each acquire; the single runRefiller()
+	// goroutine consumes it. Buffered (len(Packs)*4) so unconsumed signals never
+	// block Create. Close() closes it to stop the refiller; the send is guarded
+	// by closeMu so it can never race the close into a send-on-closed panic.
 	refillCh chan string
+
+	// closeMu guards closed and serialises Create's refillCh send against
+	// Close()'s close of the same channel. closed flips true exactly once, in
+	// Close(); Create checks it (and skips the send) under a read lock.
+	closeMu sync.RWMutex
+	closed  bool
+
+	// refillerDone is closed by runRefiller when it returns. Close() waits on it
+	// after closing refillCh so the refiller can never push a VM into a pool that
+	// Close already drained (which would leak that VM). Nil when the pool is
+	// disabled (no refiller runs). Set in New() before the refiller starts, so
+	// Close()'s later read of it needs no lock.
+	refillerDone chan struct{}
 
 	// buildOnce guards the lazy background snapshot build: acquire's no-snapshot
 	// path kicks off createSnapshot exactly once per pack so concurrent cold
@@ -256,6 +281,29 @@ func New(cfg Config) (*Manager, error) {
 		return nil, err
 	}
 
+	// Warm pool bring-up. Allocate every pack's channel now, before any goroutine
+	// exists, and never touch m.pools again (see the field comment: immutable map,
+	// mutable channels). PoolSize < 1 (the -1 sentinel) leaves m.pools nil and
+	// disables the pool entirely.
+	if cfg.PoolSize > 0 {
+		m.pools = make(map[string]chan *vm, len(cfg.Packs))
+		for name := range cfg.Packs {
+			m.pools[name] = make(chan *vm, cfg.PoolSize)
+		}
+		// Warm-on-start: fill each pool synchronously so the first Create per pack
+		// is a pool hit. Done before the refiller starts, so nothing else pushes to
+		// these channels concurrently. Skipped under SkipWarmOnStart, where no
+		// snapshot exists yet to restore from — the refiller fills the pool lazily
+		// once the first cold boot builds the snapshot.
+		if !cfg.SkipWarmOnStart {
+			for name := range m.pools {
+				m.refillPool(name)
+			}
+		}
+		m.refillerDone = make(chan struct{})
+		go m.runRefiller()
+	}
+
 	return m, nil
 }
 
@@ -264,6 +312,13 @@ func New(cfg Config) (*Manager, error) {
 func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.Sandbox, error) {
 	if _, ok := m.cfg.Packs[languagePack]; !ok {
 		return nil, fmt.Errorf("%w: %q", sandbox.ErrUnknownPack, languagePack)
+	}
+
+	m.closeMu.RLock()
+	closed := m.closed
+	m.closeMu.RUnlock()
+	if closed {
+		return nil, ErrManagerClosed
 	}
 
 	v, err := m.acquire(ctx, languagePack)
@@ -275,13 +330,18 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	m.vms[v.sb.ID] = v
 	m.mu.Unlock()
 
-	// Signal the pool refiller (lands with the pool in a later task) to top this
-	// pack back up. Non-blocking so a full or absent consumer never stalls
-	// Create; refillCh is buffered so signals are only dropped once it fills.
-	select {
-	case m.refillCh <- languagePack:
-	default:
+	// Signal the refiller to top this pack back up. Held under closeMu's read lock
+	// and re-checking closed so the non-blocking send can never race Close()'s
+	// close(refillCh) into a send-on-closed-channel panic. Non-blocking so a full
+	// (or, when the pool is disabled, unconsumed) refillCh never stalls Create.
+	m.closeMu.RLock()
+	if !m.closed {
+		select {
+		case m.refillCh <- languagePack:
+		default:
+		}
 	}
+	m.closeMu.RUnlock()
 
 	return v.sb, nil
 }
@@ -557,6 +617,127 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("stop vmm: %w", stopErr)
 	}
 	return nil
+}
+
+// runRefiller is the single goroutine that keeps pools topped up. It blocks on
+// refillCh and, per signal, tops the named pack's pool back to PoolSize. It
+// exits when Close() closes refillCh, so it never outlives the Manager.
+func (m *Manager) runRefiller() {
+	defer close(m.refillerDone)
+	for packName := range m.refillCh {
+		m.refillPool(packName)
+	}
+}
+
+// refillPool restores VMs into packName's pool until it holds PoolSize of them.
+// Each restore is pushed with a non-blocking send; if the pool is already full
+// (a concurrent refill, or a Create that returned a VM between the length check
+// and the push) the surplus VM is torn down rather than leaked. A restore error
+// logs and abandons this round — the next claim re-signals refillCh, so the pool
+// heals on the following Create without this goroutine spinning on a bad
+// snapshot. Called by runRefiller and, during warm-on-start, by New before the
+// refiller exists (so no concurrent pusher on that path).
+func (m *Manager) refillPool(packName string) {
+	pool := m.pools[packName]
+	if pool == nil {
+		return
+	}
+	for len(pool) < m.cfg.PoolSize {
+		v, err := m.restoreFromSnapshot(context.Background(), packName)
+		if err != nil {
+			m.logger.WithField("pack", packName).WithError(err).
+				Warn("pool refill restore failed; abandoning round")
+			return
+		}
+		select {
+		case pool <- v:
+		default:
+			m.teardownVM(v)
+			return
+		}
+	}
+}
+
+// teardownVM stops an unregistered VM's hypervisor and removes its work dir:
+// StopVMM, a bounded Wait, cancel the VM context, then RemoveAll. It is the
+// teardown for VMs that never enter m.vms — idle pooled VMs (drained by Close or
+// dropped as refill surplus) and the snapshot template. Registered VMs go
+// through Delete, which additionally unregisters them from m.vms.
+func (m *Manager) teardownVM(v *vm) {
+	_ = v.machine.StopVMM()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = v.machine.Wait(waitCtx)
+	cancel()
+	v.cancel()
+	_ = os.RemoveAll(v.dir)
+}
+
+// Close shuts the Manager down: it stops the refiller (by closing refillCh),
+// drains every pool tearing each idle VM down, then deletes every live VM. After
+// Close, Create returns ErrManagerClosed. Close is idempotent — a second call is
+// a no-op — so both an explicit shutdown and a test's t.Cleanup can call it.
+//
+// NOTE (plan deviation): the spec sequences full Close() in step 7; the
+// pool-drain half is pulled forward into this task so the pool tests never leak
+// Firecracker processes or work dirs.
+func (m *Manager) Close() error {
+	m.closeMu.Lock()
+	if m.closed {
+		m.closeMu.Unlock()
+		return nil
+	}
+	m.closed = true
+	// Closing refillCh both stops the refiller (its range returns) and, together
+	// with the closed flag checked under closeMu, guarantees no Create send can
+	// still be in flight to a closed channel.
+	close(m.refillCh)
+	m.closeMu.Unlock()
+
+	// Wait for the refiller to fully exit before draining, so it can't push a VM
+	// into a pool after drainPool has emptied it (which would leak that VM). Nil
+	// when the pool is disabled.
+	if m.refillerDone != nil {
+		<-m.refillerDone
+	}
+
+	// Drain idle pooled VMs. The refiller has stopped and Create's guarded send
+	// can no longer fire, so nothing else touches these channels now.
+	for _, pool := range m.pools {
+		m.drainPool(pool)
+	}
+
+	// Delete every still-live VM. Snapshot ids under m.mu, then Delete outside the
+	// lock (Delete takes m.mu itself).
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.vms))
+	for id := range m.vms {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+
+	var firstErr error
+	for _, id := range ids {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := m.Delete(ctx, id); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		cancel()
+	}
+	return firstErr
+}
+
+// drainPool tears down every VM currently idle in pool, returning once the
+// channel is empty. The non-blocking receive is the loop's exit condition; Close
+// guarantees no concurrent pusher, so an empty read means fully drained.
+func (m *Manager) drainPool(pool chan *vm) {
+	for {
+		select {
+		case v := <-pool:
+			m.teardownVM(v)
+		default:
+			return
+		}
+	}
 }
 
 func newID() (string, error) {

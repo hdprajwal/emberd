@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
 
@@ -139,16 +138,9 @@ func (m *Manager) createSnapshot(ctx context.Context, packName string) error {
 		return fmt.Errorf("create snapshot %s: cold boot template: %w", packName, err)
 	}
 
-	// The template is never registered in m.vms, so tear it down directly.
-	// Idempotent enough for the single call each path makes.
-	teardown := func() {
-		_ = v.machine.StopVMM()
-		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = v.machine.Wait(waitCtx)
-		cancel()
-		v.cancel()
-		_ = os.RemoveAll(v.dir)
-	}
+	// The template is never registered in m.vms, so tear it down directly via the
+	// shared unregistered-VM teardown.
+	teardown := func() { m.teardownVM(v) }
 
 	// Warm-up exec: pages the interpreter in so restored clones start warm. The
 	// exec closes its vsock connection when it returns, so none is open when we
