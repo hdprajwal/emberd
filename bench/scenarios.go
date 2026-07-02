@@ -23,6 +23,7 @@ func init() {
 	registerScenario("exec", runExecScenario)
 	registerScenario("workloads", runWorkloads)
 	registerScenario("conc-sweep", runConcSweep)
+	registerScenario("churn", runChurn)
 }
 
 // timeMs returns the elapsed time since start in fractional milliseconds.
@@ -643,6 +644,235 @@ func runConcLevel(rc *runContext, pack string, level int) (any, string) {
 		level, FormatMs(wallMs), FormatMs(st.P50Ms),
 		FormatGatedMs(st.P95Ms), FormatGatedMs(st.P99Ms), perSec)
 	return res, row
+}
+
+// poolSettleDelay is how long churn waits after its last cycle before
+// snapshotting the firecracker process count. The daemon may run a warm pool
+// that refills asynchronously, so the count can transiently differ from the
+// baseline without a real leak; this delay lets any in-flight refill settle
+// (bench-v2-spec.md §6.6, controller amendment for pool reality).
+const poolSettleDelay = 2 * time.Second
+
+// fdGrowthWarnThreshold is the daemon-fd growth above which churn flags a
+// (non-fatal) leak warning: some growth can be legitimate, but it must be
+// visible (bench-v2-spec.md §6.6).
+const fdGrowthWarnThreshold = 8
+
+// ChurnLeaks is the churn scenario's leak-detection summary: the before/after
+// firecracker-process delta, the daemon-fd delta (nil when the daemon PID was
+// ambiguous and the fd check was skipped), and the derived pass/warn/fail
+// status (bench-v2-spec.md §6.6, §9.4).
+type ChurnLeaks struct {
+	FirecrackerProcsDelta int    `json:"firecracker_procs_delta"`
+	DaemonFDDelta         *int   `json:"daemon_fd_delta"`
+	Status                string `json:"status"`
+}
+
+// ChurnResult is the churn scenario's JSON payload (bench-v2-spec.md §9.4).
+type ChurnResult struct {
+	Cycle              Stats      `json:"cycle"`
+	CyclesPerMin       float64    `json:"cycles_per_min"`
+	FirstQuartileP50Ms float64    `json:"first_quartile_p50_ms"`
+	LastQuartileP50Ms  float64    `json:"last_quartile_p50_ms"`
+	DegradationWarning bool       `json:"degradation_warning"`
+	Leaks              ChurnLeaks `json:"leaks"`
+}
+
+// leakStatus derives the churn leak-check verdict (bench-v2-spec.md §6.6): a
+// nonzero firecracker-process delta is a hard fail (a VM outlived its delete);
+// a daemon-fd growth beyond fdGrowthWarnThreshold is a non-fatal warning; every
+// other case passes. fdChecked is false when the daemon PID could not be
+// resolved to exactly one match, in which case fdDelta is ignored.
+func leakStatus(fcDelta, fdDelta int, fdChecked bool) string {
+	if fcDelta != 0 {
+		return "fail"
+	}
+	if fdChecked && fdDelta > fdGrowthWarnThreshold {
+		return "warn"
+	}
+	return "pass"
+}
+
+// firstLastQuartileP50 splits samples into a first-quartile and a
+// last-quartile window BY CYCLE ORDER (not sorted — degradation is a trend
+// over time, so the windows are the first and last quarter of the run) and
+// returns each window's p50 plus whether the last-quartile p50 exceeds the
+// first by more than 20% (bench-v2-spec.md §6.6). With fewer than 4 samples the
+// windows would be empty, so it returns (0, 0, false).
+func firstLastQuartileP50(samples []float64) (firstP50, lastP50 float64, warn bool) {
+	n := len(samples)
+	q := n / 4
+	if q < 1 {
+		return 0, 0, false
+	}
+	firstP50 = NewStats(samples[:q]).P50Ms
+	lastP50 = NewStats(samples[n-q:]).P50Ms
+	warn = firstP50 > 0 && lastP50 > firstP50*1.2
+	return firstP50, lastP50, warn
+}
+
+// resolveDaemonPID resolves the single emberd daemon PID (`pgrep -x emberd`
+// semantics). If there is not exactly one match the fd check is skipped — ok is
+// false and callers must not read the daemon's fds — with a logged note
+// explaining why (bench-v2-spec.md §6.6).
+func resolveDaemonPID() (pid int, ok bool) {
+	pids, err := findMatchingProcs(procRoot, daemonComm)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "note: churn: cannot scan for the emberd daemon pid: %v — skipping fd check\n", err)
+		return 0, false
+	}
+	if len(pids) != 1 {
+		fmt.Fprintf(os.Stderr, "note: churn: expected exactly one emberd process, found %d %v — skipping fd check\n", len(pids), pids)
+		return 0, false
+	}
+	return pids[0], true
+}
+
+// runChurn runs n back-to-back create → exec(hello) → delete cycles on the
+// first configured pack (bench-v2-spec.md §6.8) with NO settle delay — the one
+// documented exemption from §4's settle rule — timing each whole cycle. It
+// brackets the run with a leak check (live firecracker process count, daemon fd
+// count) and reports a first-vs-last-quartile degradation trend
+// (bench-v2-spec.md §6.6).
+func runChurn(rc *runContext) (ScenarioResult, error) {
+	pack := rc.Config.Packs[0]
+	hello := HelloPayload(pack)
+	n := rc.Config.ChurnN
+	if n < 1 {
+		return ScenarioResult{}, fmt.Errorf("churn[%s]: -churn must be >= 1, got %d", pack, n)
+	}
+
+	// Leak baseline, sampled BEFORE the first cycle.
+	fcBefore, err := countMatchingProcs(procRoot, firecrackerComm)
+	if err != nil {
+		return ScenarioResult{}, fmt.Errorf("churn[%s]: count firecracker procs (before): %w", pack, err)
+	}
+	daemonPID, fdChecked := resolveDaemonPID()
+	fdBefore := 0
+	if fdChecked {
+		fdBefore, err = countFDs(procRoot, daemonPID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "note: churn: cannot read daemon fd count before the run (pid %d): %v — skipping fd check\n", daemonPID, err)
+			fdChecked = false
+		}
+	}
+
+	cycles := make([]float64, 0, n)
+	runStart := time.Now()
+	for i := 0; i < n; i++ {
+		t0 := time.Now()
+
+		id, err := rc.Client.Create(rc.Ctx, pack)
+		if err != nil {
+			return ScenarioResult{}, fmt.Errorf("churn[%s] cycle %d: create: %w", pack, i, err)
+		}
+		outcome, err := rc.Client.Exec(rc.Ctx, id, hello.Code, hello.Stdin, hello.TimeoutMs)
+		if err != nil {
+			_ = rc.Client.Delete(rc.Ctx, id) // best-effort cleanup; the exec error is what matters
+			return ScenarioResult{}, fmt.Errorf("churn[%s] cycle %d: exec: %w", pack, i, err)
+		}
+		if err := checkPayload(hello, i, outcome); err != nil {
+			_ = rc.Client.Delete(rc.Ctx, id) // best-effort cleanup; the mismatch is what matters
+			return ScenarioResult{}, fmt.Errorf("churn[%s]: %w", pack, err)
+		}
+		if err := rc.Client.Delete(rc.Ctx, id); err != nil {
+			return ScenarioResult{}, fmt.Errorf("churn[%s] cycle %d: delete: %w", pack, i, err)
+		}
+
+		// Deliberately NO settle delay here: churn measures back-to-back cycles,
+		// the one exemption from §4's settle rule (bench-v2-spec.md §6.6).
+		cycles = append(cycles, timeMs(t0))
+	}
+	wallMs := timeMs(runStart)
+
+	// Post-run firecracker count, with the pool-reality amendment: sleep
+	// poolSettleDelay first so an async warm-pool refill can finish; if the
+	// delta is still nonzero, resample once after another poolSettleDelay and
+	// trust that. Only a nonzero delta after the resample is a genuine leak.
+	time.Sleep(poolSettleDelay)
+	fcAfter, err := countMatchingProcs(procRoot, firecrackerComm)
+	if err != nil {
+		return ScenarioResult{}, fmt.Errorf("churn[%s]: count firecracker procs (after): %w", pack, err)
+	}
+	if fcAfter != fcBefore {
+		time.Sleep(poolSettleDelay)
+		fcAfter, err = countMatchingProcs(procRoot, firecrackerComm)
+		if err != nil {
+			return ScenarioResult{}, fmt.Errorf("churn[%s]: count firecracker procs (resample): %w", pack, err)
+		}
+	}
+	fcDelta := fcAfter - fcBefore
+
+	var fdDeltaPtr *int
+	fdDelta := 0
+	if fdChecked {
+		fdAfter, err := countFDs(procRoot, daemonPID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "note: churn: cannot read daemon fd count after the run (pid %d): %v — skipping fd check\n", daemonPID, err)
+			fdChecked = false
+		} else {
+			fdDelta = fdAfter - fdBefore
+			fdDeltaPtr = &fdDelta
+		}
+	}
+
+	status := leakStatus(fcDelta, fdDelta, fdChecked)
+	firstP50, lastP50, degWarn := firstLastQuartileP50(cycles)
+	cyclesPerMin := 0.0
+	if wallMs > 0 {
+		cyclesPerMin = float64(n) / (wallMs / 60000.0)
+	}
+
+	result := ChurnResult{
+		Cycle:              NewStats(cycles),
+		CyclesPerMin:       cyclesPerMin,
+		FirstQuartileP50Ms: firstP50,
+		LastQuartileP50Ms:  lastP50,
+		DegradationWarning: degWarn,
+		Leaks: ChurnLeaks{
+			FirecrackerProcsDelta: fcDelta,
+			DaemonFDDelta:         fdDeltaPtr,
+			Status:                status,
+		},
+	}
+
+	md := renderChurnMarkdown(pack, n, result, fdChecked)
+	return ScenarioResult{JSON: result, Markdown: md}, nil
+}
+
+// renderChurnMarkdown renders the churn scenario's report section, printing the
+// leak-check verdict prominently — a FAIL is called out in bold so a leaked
+// firecracker process can't hide (bench-v2-spec.md §6.6).
+func renderChurnMarkdown(pack string, n int, r ChurnResult, fdChecked bool) string {
+	var md strings.Builder
+	md.WriteString("## Churn (sustained create → exec → delete)\n\n")
+	fmt.Fprintf(&md, "%d back-to-back cycles on the `%s` pack, no settle delay — the one exemption from the settle rule (bench-v2-spec.md §6.6). Per-cycle latency:\n\n", n, pack)
+	md.WriteString(statsTable([]statsRow{{"cycle", r.Cycle}}))
+	md.WriteString("\n")
+	fmt.Fprintf(&md, "Throughput: %.1f cycles/min.\n\n", r.CyclesPerMin)
+
+	fmt.Fprintf(&md, "Degradation (first vs last quartile p50): %s → %s", FormatMs(r.FirstQuartileP50Ms), FormatMs(r.LastQuartileP50Ms))
+	if r.DegradationWarning {
+		md.WriteString(" — **warning: last-quartile p50 is >20% above the first**")
+	}
+	md.WriteString(".\n\n")
+
+	switch r.Leaks.Status {
+	case "fail":
+		md.WriteString("**Leak check: FAIL** — a firecracker process outlived its cycle's delete.\n\n")
+	case "warn":
+		md.WriteString("Leak check: **warn** (fd growth exceeded the threshold; visible, not fatal).\n\n")
+	default:
+		md.WriteString("Leak check: pass.\n\n")
+	}
+	fmt.Fprintf(&md, "- firecracker process delta: %+d (a nonzero delta is a failure)\n", r.Leaks.FirecrackerProcsDelta)
+	if fdChecked && r.Leaks.DaemonFDDelta != nil {
+		fmt.Fprintf(&md, "- daemon fd delta: %+d (warns above +%d)\n", *r.Leaks.DaemonFDDelta, fdGrowthWarnThreshold)
+	} else {
+		md.WriteString("- daemon fd delta: skipped (daemon PID could not be resolved unambiguously)\n")
+	}
+	md.WriteString("- workdir residue: skipped (Phase 1 daemon has no /info to report its work dir)\n")
+	return md.String()
 }
 
 // vsockOverheadLine renders the "API - guest" vsock-overhead derivation
