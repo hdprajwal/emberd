@@ -275,6 +275,57 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 func (m *Manager) coldBoot(ctx context.Context, packName string) (*vm, error) {
 	pack := m.cfg.Packs[packName]
 
+	return m.launchVM(ctx, packName, func() (fc.Config, []fc.Opt) {
+		// The selected pack picks the rootfs and the guest interpreter;
+		// emberd-init reads emberd.interpreter from /proc/cmdline.
+		kernelArgs := m.cfg.KernelArgs + " emberd.interpreter=" + pack.Interpreter
+
+		return fc.Config{
+			KernelImagePath: m.cfg.KernelImagePath,
+			InitrdPath:      m.cfg.InitrdPath,
+			KernelArgs:      kernelArgs,
+			Drives: []models.Drive{{
+				DriveID:      fc.String("rootfs"),
+				PathOnHost:   fc.String(pack.RootfsPath),
+				IsRootDevice: fc.Bool(true),
+				IsReadOnly:   fc.Bool(true),
+			}},
+			// The control plane runs over a Firecracker hybrid-vsock device: the
+			// host connects through vm.vsockUDS, the guest's emberd-init binds
+			// proto.GuestPort. The device Path is the relative "v.sock" so it
+			// stays valid inside any restored VM's own cwd.
+			VsockDevices: []fc.VsockDevice{{
+				ID:   "ctrl",
+				Path: "v.sock",
+				CID:  m.allocCID(),
+			}},
+			MachineCfg: models.MachineConfiguration{
+				VcpuCount:  fc.Int64(m.cfg.VcpuCount),
+				MemSizeMib: fc.Int64(m.cfg.MemSizeMib),
+			},
+		}, nil
+	})
+}
+
+// launchVM is the boot spine shared by coldBoot and restoreFromSnapshot: fresh
+// id + per-sandbox dir, vm.log, Firecracker process pinned to the dir via
+// cmd.Dir, machine creation and start, then waitReady on the guest control
+// plane — with full unwinding (StopVMM → bounded Wait → cancel → close log →
+// remove dir) on every failure so no process or work dir outlives an error.
+//
+// makeCfg supplies the caller-specific fc.Config body plus any extra machine
+// options (the restore path passes fc.WithSnapshot); launchVM fills in the
+// per-VM SocketPath and VMID afterwards so callers cannot get them wrong. The
+// restore path therefore returns a zero fc.Config — per the fast-boot spec the
+// restore config carries only SocketPath and VMID, with drives, vsock, and
+// machine shape all coming from snapshot state.
+//
+// The vsock UDS the host dials is always dir/v.sock: the device path is the
+// relative "v.sock" (baked into snapshot state by the template) and cmd.Dir
+// pins every Firecracker process — cold-booted or restored — to its own dir,
+// giving each VM a distinct host socket without any post-boot vsock patching
+// (Firecracker's vsock API is pre-boot only, so patching is impossible).
+func (m *Manager) launchVM(ctx context.Context, packName string, makeCfg func() (fc.Config, []fc.Opt)) (*vm, error) {
 	id, err := newID()
 	if err != nil {
 		return nil, err
@@ -293,49 +344,22 @@ func (m *Manager) coldBoot(ctx context.Context, packName string) (*vm, error) {
 		return nil, fmt.Errorf("create vm log: %w", err)
 	}
 
-	// The control plane runs over a Firecracker hybrid-vsock device: the host
-	// connects through vsockUDS, the guest's emberd-init binds proto.GuestPort.
-	// The device Path is the relative "v.sock" so it stays valid inside any
-	// restored VM's own cwd; vsockUDS is the absolute join for host-side dialing.
-	cid := m.allocCID()
+	// Absolute join for host-side dialing of the guest's relative "v.sock".
 	vsockUDS := filepath.Join(dir, "v.sock")
-
-	// The selected pack picks the rootfs and the guest interpreter; emberd-init
-	// reads emberd.interpreter from /proc/cmdline.
-	kernelArgs := m.cfg.KernelArgs + " emberd.interpreter=" + pack.Interpreter
-
 	socketPath := filepath.Join(dir, "fc.sock")
-	fcCfg := fc.Config{
-		SocketPath:      socketPath,
-		KernelImagePath: m.cfg.KernelImagePath,
-		InitrdPath:      m.cfg.InitrdPath,
-		KernelArgs:      kernelArgs,
-		Drives: []models.Drive{{
-			DriveID:      fc.String("rootfs"),
-			PathOnHost:   fc.String(pack.RootfsPath),
-			IsRootDevice: fc.Bool(true),
-			IsReadOnly:   fc.Bool(true),
-		}},
-		VsockDevices: []fc.VsockDevice{{
-			ID:   "ctrl",
-			Path: "v.sock",
-			CID:  cid,
-		}},
-		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  fc.Int64(m.cfg.VcpuCount),
-			MemSizeMib: fc.Int64(m.cfg.MemSizeMib),
-		},
-	}
 
-	// The microVM must outlive the create request, so it gets its own context
-	// cancelled only on Delete. Firecracker requires this context stay live for
-	// the VM's whole lifetime.
-	vmCtx, cancel := context.WithCancel(context.Background())
+	fcCfg, extraOpts := makeCfg()
+	fcCfg.SocketPath = socketPath
 
 	// Firecracker's instance ID accepts only [A-Za-z0-9-]; the public sandbox
 	// ID uses an underscore prefix, so sanitize it for the --id flag.
 	fcID := strings.ReplaceAll(id, "_", "-")
 	fcCfg.VMID = fcID
+
+	// The microVM must outlive the create request, so it gets its own context
+	// cancelled only on Delete. Firecracker requires this context stay live for
+	// the VM's whole lifetime.
+	vmCtx, cancel := context.WithCancel(context.Background())
 
 	// No stdin is wired: the guest serial console input goes to /dev/null. The
 	// microVM stays alive because PID 1 (emberd-init) runs forever in its vsock
@@ -353,10 +377,12 @@ func (m *Manager) coldBoot(ctx context.Context, packName string) (*vm, error) {
 		Build(vmCtx)
 	cmd.Dir = dir
 
-	machine, err := fc.NewMachine(vmCtx, fcCfg,
+	opts := append([]fc.Opt{
 		fc.WithLogger(m.logger.WithField("sandbox", id)),
 		fc.WithProcessRunner(cmd),
-	)
+	}, extraOpts...)
+
+	machine, err := fc.NewMachine(vmCtx, fcCfg, opts...)
 	if err != nil {
 		cancel()
 		logFile.Close()
@@ -373,7 +399,9 @@ func (m *Manager) coldBoot(ctx context.Context, packName string) (*vm, error) {
 
 	// Block until the guest's emberd-init is past bootstrap and accepting on the
 	// vsock control plane. Without this, an exec issued right after create races
-	// the guest boot; with it, a returned sandbox is immediately usable.
+	// the guest boot; with it, a returned sandbox is immediately usable. On the
+	// restore path the guest listener survived the snapshot, so this converges
+	// in a probe or two.
 	if err := waitReady(ctx, vsockUDS, proto.GuestPort, m.cfg.BootTimeout); err != nil {
 		_ = machine.StopVMM()
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
