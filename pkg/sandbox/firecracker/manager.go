@@ -176,10 +176,37 @@ func New(cfg Config) (*Manager, error) {
 // Create boots a fresh microVM running the named language pack and returns its
 // sandbox handle. An unknown pack name returns sandbox.ErrUnknownPack.
 func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.Sandbox, error) {
-	pack, ok := m.cfg.Packs[languagePack]
-	if !ok {
+	if _, ok := m.cfg.Packs[languagePack]; !ok {
 		return nil, fmt.Errorf("%w: %q", sandbox.ErrUnknownPack, languagePack)
 	}
+
+	v, err := m.coldBoot(ctx, languagePack)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	m.vms[v.sb.ID] = v
+	m.mu.Unlock()
+
+	return v.sb, nil
+}
+
+// coldBoot boots a fresh microVM for packName over the cold-boot path (kernel +
+// initramfs + rootfs drive) and returns its live handle. It does everything
+// Create does except validating the pack name and registering the VM in m.vms,
+// so snapshot creation and the restore-miss path can share the same boot code.
+// packName must be a valid pack (callers validate).
+//
+// The guest vsock device is bound at the relative path "v.sock" and the
+// Firecracker process runs with its per-sandbox dir as its working directory
+// (cmd.Dir = dir). This is deliberate: Firecracker's vsock API is pre-boot only,
+// so a snapshot bakes in whatever UDS path the template used; a relative path +
+// per-VM cwd is the only way each restored VM gets its own socket without an
+// (impossible) post-restore patch. vm.vsockUDS still records the absolute path
+// because the host dials it directly.
+func (m *Manager) coldBoot(ctx context.Context, packName string) (*vm, error) {
+	pack := m.cfg.Packs[packName]
 
 	id, err := newID()
 	if err != nil {
@@ -201,8 +228,10 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 
 	// The control plane runs over a Firecracker hybrid-vsock device: the host
 	// connects through vsockUDS, the guest's emberd-init binds proto.GuestPort.
+	// The device Path is the relative "v.sock" so it stays valid inside any
+	// restored VM's own cwd; vsockUDS is the absolute join for host-side dialing.
 	cid := m.allocCID()
-	vsockUDS := filepath.Join(dir, "vsock.sock")
+	vsockUDS := filepath.Join(dir, "v.sock")
 
 	// The selected pack picks the rootfs and the guest interpreter; emberd-init
 	// reads emberd.interpreter from /proc/cmdline.
@@ -222,7 +251,7 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		}},
 		VsockDevices: []fc.VsockDevice{{
 			ID:   "ctrl",
-			Path: vsockUDS,
+			Path: "v.sock",
 			CID:  cid,
 		}},
 		MachineCfg: models.MachineConfiguration{
@@ -244,6 +273,10 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 	// No stdin is wired: the guest serial console input goes to /dev/null. The
 	// microVM stays alive because PID 1 (emberd-init) runs forever in its vsock
 	// accept loop, not because a console pipe is held open.
+	//
+	// cmd.Dir pins the Firecracker process to this sandbox's dir so the relative
+	// "v.sock" device path resolves to dir/v.sock — the per-VM host socket that a
+	// snapshot restore also binds inside its own dir.
 	cmd := fc.VMCommandBuilder{}.
 		WithBin(m.cfg.FirecrackerBin).
 		WithSocketPath(socketPath).
@@ -251,6 +284,7 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		WithStdout(logFile).
 		WithStderr(logFile).
 		Build(vmCtx)
+	cmd.Dir = dir
 
 	machine, err := fc.NewMachine(vmCtx, fcCfg,
 		fc.WithLogger(m.logger.WithField("sandbox", id)),
@@ -284,20 +318,14 @@ func (m *Manager) Create(ctx context.Context, languagePack string) (*sandbox.San
 		return nil, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
-	sb := &sandbox.Sandbox{ID: id, LanguagePack: languagePack}
-
-	m.mu.Lock()
-	m.vms[id] = &vm{
-		sb:        sb,
+	return &vm{
+		sb:        &sandbox.Sandbox{ID: id, LanguagePack: packName},
 		machine:   machine,
 		cancel:    cancel,
 		dir:       dir,
 		vsockUDS:  vsockUDS,
 		vsockPort: proto.GuestPort,
-	}
-	m.mu.Unlock()
-
-	return sb, nil
+	}, nil
 }
 
 // allocCID hands out a fresh guest context ID.
