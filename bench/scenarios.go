@@ -15,6 +15,7 @@ const settleDelay = 100 * time.Millisecond
 
 func init() {
 	registerScenario("cold-boot", runColdBoot)
+	registerScenario("ttfr", runTTFR)
 }
 
 // timeMs returns the elapsed time since start in fractional milliseconds.
@@ -120,6 +121,93 @@ func runColdBoot(rc *runContext) (ScenarioResult, error) {
 		fmt.Fprintf(&md, "### %s\n\n", pack)
 		md.WriteString(statsTable([]statsRow{
 			{"create", packResult.Create},
+			{"delete", packResult.Delete},
+		}))
+		md.WriteString("\n")
+	}
+
+	return ScenarioResult{JSON: result, Markdown: md.String()}, nil
+}
+
+// TTFRPackResult is one pack's time-to-first-result outcome: total session
+// latency plus its three components (bench-v2-spec.md §6.2, §9.4).
+type TTFRPackResult struct {
+	Total     Stats `json:"total"`
+	Create    Stats `json:"create"`
+	FirstExec Stats `json:"first_exec"`
+	Delete    Stats `json:"delete"`
+}
+
+// TTFRResult is the ttfr scenario's JSON payload, keyed by language pack.
+type TTFRResult map[string]TTFRPackResult
+
+// runTTFR times the full create -> exec(hello) -> delete session, once per
+// configured pack, recording four samples per iteration and settling
+// settleDelay between iterations (bench-v2-spec.md §6.2).
+func runTTFR(rc *runContext) (ScenarioResult, error) {
+	result := make(TTFRResult, len(rc.Config.Packs))
+	var md strings.Builder
+	md.WriteString("## Time-to-first-result (ttfr)\n\n")
+	md.WriteString("Full session create → exec(`hello`) → delete — the E2B-comparable end-to-end number ")
+	fmt.Fprintf(&md, "(bench-v2-spec.md §6.2). %s settle between iterations.\n\n", settleDelay)
+
+	for _, pack := range rc.Config.Packs {
+		hello := HelloPayload(pack)
+		n := rc.Config.TTFRN
+
+		totals := make([]float64, 0, n)
+		creates := make([]float64, 0, n)
+		firstExecs := make([]float64, 0, n)
+		deletes := make([]float64, 0, n)
+
+		for i := 0; i < n; i++ {
+			t0 := time.Now()
+
+			id, err := rc.Client.Create(rc.Ctx, pack)
+			if err != nil {
+				return ScenarioResult{}, fmt.Errorf("ttfr[%s] iteration %d: create: %w", pack, i, err)
+			}
+			creates = append(creates, timeMs(t0))
+
+			te := time.Now()
+			outcome, err := rc.Client.Exec(rc.Ctx, id, hello.Code, hello.Stdin, hello.TimeoutMs)
+			if err != nil {
+				return ScenarioResult{}, fmt.Errorf("ttfr[%s] iteration %d: exec: %w", pack, i, err)
+			}
+			firstExecs = append(firstExecs, timeMs(te))
+			if err := checkPayload(hello, i, outcome); err != nil {
+				return ScenarioResult{}, fmt.Errorf("ttfr[%s]: %w", pack, err)
+			}
+
+			td := time.Now()
+			if err := rc.Client.Delete(rc.Ctx, id); err != nil {
+				return ScenarioResult{}, fmt.Errorf("ttfr[%s] iteration %d: delete: %w", pack, i, err)
+			}
+			deletes = append(deletes, timeMs(td))
+
+			// Total spans the whole session, measured from the same t0 as
+			// create — it is not the sum of the components (which would
+			// double-count nothing here, but this keeps it an independent,
+			// directly-measured sample rather than a derived one).
+			totals = append(totals, timeMs(t0))
+
+			time.Sleep(settleDelay)
+		}
+
+		packResult := TTFRPackResult{
+			Total:     NewStats(totals),
+			Create:    NewStats(creates),
+			FirstExec: NewStats(firstExecs),
+			Delete:    NewStats(deletes),
+		}
+		result[pack] = packResult
+
+		fmt.Fprintf(&md, "### %s\n\n", pack)
+		fmt.Fprintf(&md, "**Total session (headline): %s p50, n=%d**\n\n", FormatMs(packResult.Total.P50Ms), packResult.Total.N)
+		md.WriteString(statsTable([]statsRow{
+			{"total", packResult.Total},
+			{"create", packResult.Create},
+			{"first exec", packResult.FirstExec},
 			{"delete", packResult.Delete},
 		}))
 		md.WriteString("\n")
