@@ -39,6 +39,16 @@
 //	#    (guest-side <5 ms; wall time is dominated by HTTP + teardown).
 //	./bin/emberd &
 //	go run ./bench -run cold-boot
+//
+// # Memory scenario attribution
+//
+// The `memory` scenario attributes each sandbox to its backing firecracker
+// process by that process's cmdline (its per-sandbox api-socket path). This is
+// unambiguous only against a pool-disabled daemon (`./bin/emberd
+// -pool-size=-1`): with a warm pool, unrelated refill VMs come and go, which
+// can make a create's attribution ambiguous — the scenario then fails loudly
+// rather than mis-attributing PSS to the wrong VM. Run `memory` against a
+// pool-disabled daemon for clean numbers.
 package main
 
 import (

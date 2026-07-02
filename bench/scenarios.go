@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -24,6 +25,7 @@ func init() {
 	registerScenario("workloads", runWorkloads)
 	registerScenario("conc-sweep", runConcSweep)
 	registerScenario("churn", runChurn)
+	registerScenario("memory", runMemory)
 }
 
 // timeMs returns the elapsed time since start in fractional milliseconds.
@@ -872,6 +874,209 @@ func renderChurnMarkdown(pack string, n int, r ChurnResult, fdChecked bool) stri
 		md.WriteString("- daemon fd delta: skipped (daemon PID could not be resolved unambiguously)\n")
 	}
 	md.WriteString("- workdir residue: skipped (Phase 1 daemon has no /info to report its work dir)\n")
+	return md.String()
+}
+
+// MemoryResult is the memory scenario's JSON payload (bench-v2-spec.md §9.4).
+// The idle_pss_mib / loaded_pss_mib fields reuse the Stats type, so their JSON
+// keys read `_ms`; the values are MiB, as the Markdown report makes explicit.
+type MemoryResult struct {
+	IdlePSSMiB           Stats   `json:"idle_pss_mib"`
+	LoadedPSSMiB         Stats   `json:"loaded_pss_mib"`
+	EstSandboxesPer16GiB float64 `json:"est_sandboxes_per_16gib"`
+}
+
+// idleSettleDelay is how long the memory scenario lets the K sandboxes sit idle
+// before reading their idle PSS (bench-v2-spec.md §6.7).
+const idleSettleDelay = 2 * time.Second
+
+// loadedSampleAt is when, into an in-flight mem-touch exec, the memory scenario
+// samples a sandbox's loaded PSS: mem-touch has allocated and touched its 64
+// MiB and is mid-sleep by the 1 s mark, so the sample catches the loaded
+// footprint (bench-v2-spec.md §6.7).
+const loadedSampleAt = 1 * time.Second
+
+// findPayload returns pack's payload named name, and whether it exists. Unlike
+// HelloPayload it does not panic on absence: the memory scenario needs
+// mem-touch, which the shell pack's matrix omits, and that is a recoverable
+// "fail this scenario clearly" condition rather than a programming error.
+func lookupPayload(pack, name string) (Payload, bool) {
+	for _, p := range PayloadsForPack(pack) {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Payload{}, false
+}
+
+// runMemory measures per-sandbox host memory on the first configured pack
+// (bench-v2-spec.md §6.7, §6.8): boot K sandboxes sequentially — attributing
+// each backing firecracker PID by its cmdline (robust under a warm pool) — let
+// them idle, read each idle PSS from /proc/<pid>/smaps_rollup, then run
+// mem-touch on each while a goroutine samples its loaded PSS at the 1 s mark.
+// An unreadable smaps_rollup or an ambiguous PID attribution fails the scenario
+// loudly rather than reporting a zero.
+func runMemory(rc *runContext) (ScenarioResult, error) {
+	pack := rc.Config.Packs[0]
+	k := rc.Config.MemSandboxes
+	if k < 1 {
+		return ScenarioResult{}, fmt.Errorf("memory[%s]: -mem-sandboxes must be >= 1, got %d", pack, k)
+	}
+	memTouch, ok := lookupPayload(pack, "mem-touch")
+	if !ok {
+		return ScenarioResult{}, fmt.Errorf("memory[%s]: no mem-touch payload for this pack — the memory scenario needs it (bench-v2-spec.md §6.7)", pack)
+	}
+
+	type box struct {
+		id  string
+		pid int
+	}
+	boxes := make([]box, 0, k)
+	cleanup := func() {
+		for _, b := range boxes {
+			_ = rc.Client.Delete(rc.Ctx, b.id)
+		}
+	}
+
+	// Boot K sandboxes SEQUENTIALLY, attributing each backing PID right after
+	// its create so attribution stays unambiguous (bench-v2-spec.md §6.7).
+	for i := 0; i < k; i++ {
+		id, err := rc.Client.Create(rc.Ctx, pack)
+		if err != nil {
+			cleanup()
+			return ScenarioResult{}, fmt.Errorf("memory[%s] sandbox %d: create: %w", pack, i, err)
+		}
+		boxes = append(boxes, box{id: id})
+		pid, err := attributeFirecrackerPID(procRoot, id)
+		if err != nil {
+			cleanup()
+			return ScenarioResult{}, fmt.Errorf("memory[%s] sandbox %d (%s): attribute pid: %w", pack, i, id, err)
+		}
+		boxes[i].pid = pid
+	}
+
+	// Idle, then read idle PSS per sandbox.
+	time.Sleep(idleSettleDelay)
+	idle := make([]float64, 0, k)
+	for i, b := range boxes {
+		pss, err := readPSSMiB(smapsRollupPath(procRoot, b.pid))
+		if err != nil {
+			cleanup()
+			return ScenarioResult{}, fmt.Errorf("memory[%s] sandbox %d (%s pid %d): idle PSS: %w", pack, i, b.id, b.pid, err)
+		}
+		idle = append(idle, pss)
+	}
+
+	// Loaded PSS: run mem-touch on each sandbox, sampling its PSS at the 1 s
+	// mark while the exec is in flight.
+	loaded := make([]float64, 0, k)
+	for i, b := range boxes {
+		pss, err := execAndSampleLoadedPSS(rc, pack, b.id, b.pid, memTouch)
+		if err != nil {
+			cleanup()
+			return ScenarioResult{}, fmt.Errorf("memory[%s] sandbox %d (%s): %w", pack, i, b.id, err)
+		}
+		loaded = append(loaded, pss)
+	}
+
+	cleanup()
+
+	loadedStats := NewStats(loaded)
+	est := 0.0
+	if loadedStats.P50Ms > 0 {
+		est = 16384.0 / loadedStats.P50Ms
+	}
+	result := MemoryResult{
+		IdlePSSMiB:           NewStats(idle),
+		LoadedPSSMiB:         loadedStats,
+		EstSandboxesPer16GiB: est,
+	}
+
+	md := renderMemoryMarkdown(pack, k, result)
+	return ScenarioResult{JSON: result, Markdown: md}, nil
+}
+
+// execAndSampleLoadedPSS runs payload (mem-touch) on the sandbox while a
+// goroutine samples the backing firecracker PSS at loadedSampleAt into the
+// in-flight exec (bench-v2-spec.md §6.7). The exec is checked for correctness.
+// If the exec returns before the 1 s sample fires — it should not, mem-touch
+// sleeps 2 s — the sampler reports that as an error rather than returning a
+// misleading PSS.
+func execAndSampleLoadedPSS(rc *runContext, pack, id string, pid int, payload Payload) (float64, error) {
+	type sample struct {
+		pss float64
+		err error
+	}
+	ch := make(chan sample, 1)
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-time.After(loadedSampleAt):
+			pss, err := readPSSMiB(smapsRollupPath(procRoot, pid))
+			ch <- sample{pss: pss, err: err}
+		case <-stop:
+			ch <- sample{err: errors.New("mem-touch exec returned before the 1s loaded-PSS sample")}
+		}
+	}()
+
+	outcome, err := rc.Client.Exec(rc.Ctx, id, payload.Code, payload.Stdin, payload.TimeoutMs)
+	if err != nil {
+		close(stop)
+		<-ch
+		return 0, fmt.Errorf("mem-touch exec: %w", err)
+	}
+	if err := checkPayload(payload, 0, outcome); err != nil {
+		close(stop)
+		<-ch
+		return 0, err
+	}
+
+	s := <-ch
+	if s.err != nil {
+		return 0, fmt.Errorf("sample loaded PSS: %w", s.err)
+	}
+	return s.pss, nil
+}
+
+// formatMiB renders a MiB value to one decimal place. The memory scenario needs
+// its own formatter because FormatMs would append " ms" to what is really a
+// memory figure.
+func formatMiB(v float64) string {
+	return fmt.Sprintf("%.1f MiB", v)
+}
+
+// formatGatedMiB renders a gated percentile cell in MiB: "—" when the value was
+// omitted for insufficient sample count, else formatMiB.
+func formatGatedMiB(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return formatMiB(*v)
+}
+
+// memStatsRow renders one MiB Stats row for the memory report table.
+func memStatsRow(label string, s Stats) string {
+	return fmt.Sprintf("| %s | %d | %s | %s | %s | %s | %s | %s |\n",
+		label, s.N, formatMiB(s.MeanMs), formatMiB(s.P50Ms),
+		formatGatedMiB(s.P95Ms), formatGatedMiB(s.P99Ms),
+		formatMiB(s.MinMs), formatMiB(s.MaxMs))
+}
+
+// renderMemoryMarkdown renders the memory scenario's report section. It states
+// that attribution is unambiguous only against a pool-disabled daemon
+// (`./bin/emberd -pool-size=-1`), matching the note in the bench usage header
+// (bench-v2-spec.md §6.7).
+func renderMemoryMarkdown(pack string, k int, r MemoryResult) string {
+	var md strings.Builder
+	md.WriteString("## Memory (per-sandbox host PSS)\n\n")
+	fmt.Fprintf(&md, "%d sandboxes on the `%s` pack, booted sequentially; PSS read from `/proc/<pid>/smaps_rollup` per sandbox. Values are MiB, not ms — the Stats block is reused (bench-v2-spec.md §6.7).\n\n", k, pack)
+	md.WriteString("PID attribution is by the firecracker process cmdline (its per-sandbox api-socket path). It is unambiguous when run against a pool-disabled daemon (`./bin/emberd -pool-size=-1`); against a warm-pool daemon, unrelated refill VMs may make a create's attribution ambiguous, and the scenario then fails loudly rather than mis-attributing.\n\n")
+	md.WriteString("| metric | n | mean | p50 | p95 | p99 | min | max |\n")
+	md.WriteString("|---|---|---|---|---|---|---|---|\n")
+	md.WriteString(memStatsRow("idle PSS", r.IdlePSSMiB))
+	md.WriteString(memStatsRow("loaded PSS", r.LoadedPSSMiB))
+	md.WriteString("\n")
+	fmt.Fprintf(&md, "Illustrative estimate: ~%.0f sandboxes per 16 GiB (16384 ÷ loaded PSS p50 %s — a rough capacity figure, not a guarantee).\n\n", r.EstSandboxesPer16GiB, formatMiB(r.LoadedPSSMiB.P50Ms))
 	return md.String()
 }
 
