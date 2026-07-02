@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/sirupsen/logrus v1.8.1
-	golang.org/x/sys v0.0.0-20220204135822-1c1b9b1eba6a
+	golang.org/x/sys v0.38.0
 )
 
 require (
