@@ -20,212 +20,314 @@ html > body[data-scroll-locked] {
 }
 
 /* ------------------------------------------------------------------ *
- * Landing page — engineered-minimal, dark, ember accent.
- * Everything here is scoped under .ember-landing so the Fumadocs docs
- * pages keep their own neutral theme untouched.
+ * Landing page — Ollama-style paper-white minimal system.
+ * Tokens from docs/design.md. Everything is scoped under .paper-landing
+ * so the Fumadocs docs pages keep their own theme untouched.
+ * Light-only for now; the dark variant later is a token swap here.
+ * Lives in @layer components so Tailwind utilities can override.
  * ------------------------------------------------------------------ */
-.ember-landing {
-  --ember-bg: #0a0a0b;
-  --ember-bg-soft: #101013;
-  --ember-fg: #f1f0ec;
-  --ember-sub: #b9b8b2;
-  --ember-muted: #8d8c85;
-  --ember-faint: #5d5c56;
-  --ember-line: rgba(255, 255, 255, 0.08);
-  --ember-line-strong: rgba(255, 255, 255, 0.15);
-  --ember-grid: rgba(255, 255, 255, 0.035);
-  --ember-accent: #ff6a3d;
-  --ember-amber: #f5b14c;
-  --ember-glow: rgba(255, 92, 46, 0.45);
+@layer components {
+.paper-landing {
+  --ink: #000000;
+  --ink-deep: #090909;
+  --charcoal: #525252;
+  --p-body: #737373;
+  --mute: #a3a3a3;
+  --canvas: #ffffff;
+  --surface-soft: #fafafa;
+  --surface-dark: #171717;
+  --hairline: #e5e5e5;
+  --hairline-strong: #d4d4d4;
+  --on-dark-mute: rgba(255, 255, 255, 0.7);
+  --tl-red: #ff5f56;
+  --tl-yellow: #ffbd2e;
+  --tl-green: #27c93f;
+  /* the one brand color — the ember from the logo, used scarcely */
+  --ember: #d8451c;
 
-  position: relative;
-  isolation: isolate;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 100vh;
-  background: var(--ember-bg);
-  color: var(--ember-fg);
-  font-family: var(--font-ember-display), ui-sans-serif, system-ui, sans-serif;
-  letter-spacing: -0.012em;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow-x: clip;
 }
 
-.ember-landing ::selection {
-  background: rgba(255, 106, 61, 0.28);
-  color: #fff;
+/* display + label voices, scoped via layout-provided font variables */
+.paper-display {
+  font-family: var(--font-paper-display), system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.02em;
 }
 
-.ember-mono {
-  font-family: var(--font-ember-mono), ui-monospace, "SFMono-Regular", monospace;
+.paper-mono {
+  font-family: var(--font-paper-mono), ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
   letter-spacing: 0;
-  font-feature-settings: "ss01";
 }
 
-/* atmosphere — fixed grid + one ember glow behind the hero */
-.ember-grid-bg {
-  position: fixed;
-  inset: 0;
-  z-index: -2;
-  pointer-events: none;
-  background-image:
-    linear-gradient(to right, var(--ember-grid) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--ember-grid) 1px, transparent 1px);
-  background-size: 72px 72px;
-  background-position: center top;
-  -webkit-mask-image: radial-gradient(ellipse 75% 55% at 50% -5%, #000 0%, transparent 72%);
-  mask-image: radial-gradient(ellipse 75% 55% at 50% -5%, #000 0%, transparent 72%);
-}
+/* text color helpers */
+.paper-landing .t-ink { color: var(--ink); }
+.paper-landing .t-charcoal { color: var(--charcoal); }
+.paper-landing .t-body { color: var(--p-body); }
+.paper-landing .t-mute { color: var(--mute); }
+.paper-landing .t-ember { color: var(--ember); }
+.paper-landing .bd { border-color: var(--hairline); }
+.paper-landing .tnum { font-variant-numeric: tabular-nums; }
 
-.ember-glow-bg {
-  position: fixed;
-  z-index: -1;
-  pointer-events: none;
-  top: -24vh;
-  left: 50%;
-  width: min(1040px, 94vw);
-  height: 60vh;
-  transform: translateX(-50%);
-  background: radial-gradient(ellipse at center, var(--ember-glow) 0%, transparent 64%);
-  filter: blur(44px);
-  opacity: 0.5;
-  animation: ember-pulse 8s ease-in-out infinite;
-}
-
-@keyframes ember-pulse {
-  0%, 100% { opacity: 0.42; }
-  50% { opacity: 0.72; }
-}
-
-/* type + color helpers */
-.ember-landing .t-fg { color: var(--ember-fg); }
-.ember-landing .t-sub { color: var(--ember-sub); }
-.ember-landing .t-muted { color: var(--ember-muted); }
-.ember-landing .t-faint { color: var(--ember-faint); }
-.ember-landing .t-accent { color: var(--ember-accent); }
-.ember-landing .t-amber { color: var(--ember-amber); }
-.ember-landing .bd { border-color: var(--ember-line); }
-.ember-landing .bd-strong { border-color: var(--ember-line-strong); }
-
-/* tabular figures for stats so columns of numerals align */
-.ember-landing .tnum { font-variant-numeric: tabular-nums; }
-
-/* keyboard focus — visible, on-brand, never on mouse click */
-.ember-landing a:focus-visible,
-.ember-landing button:focus-visible {
-  outline: 2px solid var(--ember-accent);
-  outline-offset: 3px;
-  border-radius: 5px;
-}
-
-/* the faintest film grain, for tactile depth over the flat ground */
-.ember-grain {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-/* wordmark dot */
-.ember-dot {
-  width: 0.5rem;
-  height: 0.5rem;
+/* pills — every interactive element is fully rounded */
+.pill-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 8px 20px;
   border-radius: 9999px;
-  background: radial-gradient(circle at 35% 30%, #ffd9a0, var(--ember-accent) 55%, #c8341a);
-  box-shadow: 0 0 0 1px rgba(255, 106, 61, 0.35), 0 0 12px 1px var(--ember-glow);
+  background: var(--ink);
+  color: var(--canvas);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background 0.15s ease;
+}
+.pill-primary:hover { background: #262626; }
+.pill-primary:active { background: var(--ink-deep); }
+
+.pill-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 8px 20px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background 0.15s ease;
+}
+.pill-outline:hover { background: var(--surface-soft); }
+
+.pill-on-dark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 8px 20px;
+  border-radius: 9999px;
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  transition: opacity 0.15s ease;
+}
+.pill-on-dark:hover { opacity: 0.9; }
+
+/* the signature install block — the page's lead object.
+ * Width follows the command, not the container, so a short `curl … | sh`
+ * never sits in a stretched frame and a long one never wraps mid-hero.
+ * Rectangular (not a pill) so that if it *does* wrap on a narrow phone the
+ * frame degrades to a taller box instead of a lopsided lozenge. */
+.install-block {
+  display: inline-flex;
+  /* top-aligned so the $ stays on the command's first line when the block
+   * wraps on narrow screens, instead of floating at its vertical centre */
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 100%;
+  padding: 16px 20px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.install-block .prompt {
+  flex: none;
+  color: var(--ember);
+  user-select: none;
+}
+.install-block .cmd {
+  overflow-wrap: anywhere;
+}
+
+/* labeled copy control — the word, not a bare icon, so the affordance
+ * never has to be guessed. Sits outside the block's right edge. */
+.copy-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 8px 16px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.copy-pill:hover { background: var(--surface-soft); }
+.copy-pill[data-copied='true'] { color: var(--ember); }
+
+/* terminal mockup card */
+.terminal-card {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+/* flat cards (stats pair) */
+.paper-card {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 32px;
+}
+.paper-card-dark {
+  background: var(--surface-dark);
+  color: var(--canvas);
+  border-radius: 12px;
+  padding: 32px;
+}
+
+/* nav + footer links */
+.paper-navlink {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+.paper-navlink:hover { color: var(--p-body); }
+
+.paper-footlink {
+  color: var(--p-body);
+  font-size: 12px;
+  transition: color 0.15s ease;
+}
+.paper-footlink:hover { color: var(--ink); }
+
+/* underlined inline link, Ollama-style */
+.paper-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.paper-link:hover { color: var(--charcoal); }
+.paper-link-mute {
+  color: var(--p-body);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.paper-link-mute:hover { color: var(--ink); }
+
+/* checkmark feature bullet — the tick is the one ember moment per row */
+.paper-check {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--charcoal);
+  font-size: 14px;
+  line-height: 1.43;
+}
+.paper-check::before {
+  content: "✓";
+  color: var(--ember);
+  font-size: 13px;
   flex: none;
 }
 
-/* primary button (near-white, ember on hover) */
-.ember-btn {
-  background: var(--ember-fg);
-  color: var(--ember-bg);
-  transition: box-shadow 0.3s ease, transform 0.2s ease, background 0.3s ease;
+/* checkmark bullet, inverted for the dark speed panel */
+.paper-check-on-dark {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--on-dark-mute);
+  font-size: 14px;
+  line-height: 1.43;
 }
-.ember-btn:hover {
-  box-shadow: 0 0 0 1px rgba(255, 106, 61, 0.5), 0 8px 30px -8px var(--ember-glow);
-  transform: translateY(-1px);
+.paper-check-on-dark::before {
+  content: "✓";
+  color: var(--ember);
+  font-size: 13px;
+  flex: none;
 }
 
-/* ghost button + nav links */
-.ember-ghost {
-  border: 1px solid var(--ember-line-strong);
-  color: var(--ember-fg);
-  transition: background 0.25s ease, border-color 0.25s ease, transform 0.2s ease;
-}
-.ember-ghost:hover {
-  background: rgba(255, 255, 255, 0.035);
-  border-color: rgba(255, 255, 255, 0.28);
-  transform: translateY(-1px);
-}
-.ember-navlink {
-  color: var(--ember-muted);
-  transition: color 0.2s ease;
-}
-.ember-navlink:hover { color: var(--ember-fg); }
-
-/* feature cells */
-.ember-cell {
+/* lifecycle rail — each step hangs under its own hairline tick, with an
+ * ember node at the left end marking where the step begins */
+.rail-step {
   position: relative;
-  transition: background 0.3s ease;
+  border-top: 1px solid var(--hairline);
+  padding-top: 28px;
 }
-.ember-cell::before {
+.rail-step::before {
   content: "";
   position: absolute;
+  top: -3.5px;
   left: 0;
-  top: -1px;
-  height: 1px;
-  width: 0;
-  background: linear-gradient(to right, var(--ember-accent), transparent);
-  transition: width 0.4s cubic-bezier(0.2, 0.7, 0.2, 1);
-}
-.ember-cell:hover { background: rgba(255, 255, 255, 0.018); }
-.ember-cell:hover::before { width: 100%; }
-
-/* terminal */
-.ember-term {
-  background: linear-gradient(180deg, var(--ember-bg-soft), #0c0c0e);
-  border: 1px solid var(--ember-line);
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
-    0 40px 80px -40px rgba(0, 0, 0, 0.8),
-    0 0 50px -20px var(--ember-glow);
-}
-.ember-caret {
-  display: inline-block;
-  width: 0.5ch;
-  height: 1.05em;
-  background: var(--ember-accent);
-  margin-left: 0.15ch;
-  vertical-align: -0.18em;
-  animation: ember-blink 1.15s steps(1) infinite;
-}
-@keyframes ember-blink {
-  0%, 50% { opacity: 1; }
-  50.01%, 100% { opacity: 0; }
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--ember);
 }
 
-/* staggered load reveal */
-@keyframes ember-rise {
-  from { opacity: 0; transform: translateY(16px); }
+/* mono section marker — `01 / Lifecycle` datasheet index */
+.spec-marker {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-paper-mono), ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.spec-marker .idx { color: var(--ember); }
+.spec-marker .lbl { color: var(--mute); }
+
+/* endpoint chip — command-tag from the reference system */
+.endpoint-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-family: var(--font-paper-mono), ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.43;
+  white-space: nowrap;
+}
+
+/* staggered load reveal — the page's single orchestrated motion */
+@keyframes paper-rise {
+  from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: none; }
 }
-.ember-rise {
+.rise {
   opacity: 0;
-  animation: ember-rise 0.85s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+  animation: paper-rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ember-landing .ember-rise,
-  .ember-landing .ember-glow-bg,
-  .ember-landing .ember-caret {
-    animation: none !important;
+  .paper-landing .rise {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
-  .ember-landing .ember-rise {
-    opacity: 1 !important;
-    transform: none !important;
-  }
+}
+
+/* keyboard focus — browser-default translucent blue, per the reference */
+.paper-landing a:focus-visible,
+.paper-landing button:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.5);
+  outline-offset: 2px;
+}
 }

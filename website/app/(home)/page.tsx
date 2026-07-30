@@ -1,190 +1,155 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
-import { ArrowRight, ArrowUpRight } from 'lucide-react';
+import { CopyButton } from '@/components/copy-button';
 
 const GITHUB = 'https://github.com/hdprajwal/emberd';
 
-const stats = [
-  { value: '43 ms', label: 'Time to first result' },
-  { value: '<1 ms', label: 'Create (warm pool)' },
-  { value: '7 MiB', label: 'Idle RAM per sandbox' },
-  { value: 'None', label: 'Network by default' },
+/** The one install command. Rendered verbatim and copied verbatim — what the
+ *  reader sees is exactly what lands on the clipboard. Single source: change
+ *  it here and both the hero block and the copy action follow. */
+const INSTALL_CMD = 'curl -fsSL https://emberd.hdprajwal.dev/install.sh | sh';
+
+const specs = [
+  { value: '43 ms', label: 'full round trip' },
+  { value: '<1 ms', label: 'create, warm pool' },
+  { value: '7 MiB', label: 'idle RAM / sandbox' },
+  { value: '0', label: 'network devices' },
 ];
 
-const features = [
+const endpoints = [
   {
-    n: '01',
-    title: 'Real hardware isolation',
-    body: 'Every sandbox is its own KVM microVM with its own Linux kernel. A guest escape has to beat the hypervisor — not just a namespace it shares with the host.',
+    chip: 'POST /sandboxes',
+    text: 'Boot a fresh microVM — or take a pre-warmed one off the pool.',
   },
   {
-    n: '02',
-    title: 'Serving in ~43 ms',
-    body: 'A warm pool and snapshot restore hand out microVMs in under a millisecond; a full create → exec → destroy round-trip lands in ~43 ms. create blocks on a vsock readiness probe, so a returned sandbox is usable on the very first exec.',
+    chip: 'POST /sandboxes/{id}/exec',
+    text: 'Run code inside the guest over vsock. stdout, stderr, exit code back.',
   },
   {
-    n: '03',
-    title: 'A control plane you can read',
-    body: 'Length-prefixed JSON over a vsock socket — no IP stack. v0.1 sandboxes run with no network device at all, and PID 1 reaps orphaned processes so nothing leaks.',
+    chip: 'DELETE /sandboxes/{id}',
+    text: 'Tear the VM down. The overlay is discarded; nothing survives.',
   },
 ];
 
 export default function HomePage() {
   return (
     <>
-      {/* ── header ─────────────────────────────────────────────── */}
-      <header className="ember-rise sticky top-0 z-20 border-b bd backdrop-blur-md">
-        <div
-          className="absolute inset-0 -z-10"
-          style={{ background: 'rgba(10,10,11,0.62)' }}
-          aria-hidden
-        />
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-6">
-          <Link href="/" className="flex items-center gap-2.5">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.svg" alt="" width={23} height={20} className="h-5 w-auto" />
-            <span className="ember-mono text-[0.95rem] font-medium tracking-tight">
-              emberd
-            </span>
-            <span className="ember-mono rounded border bd px-1.5 py-0.5 text-[0.62rem] tracking-wide t-faint">
-              v0.1
-            </span>
-          </Link>
-          <nav className="ember-mono flex items-center gap-6 text-[0.82rem]">
-            <Link href="/docs" className="ember-navlink">
-              Docs
+      {/* ── nav ────────────────────────────────────────────────── */}
+      <header className="w-full">
+        <div className="mx-auto flex h-14 w-full max-w-4xl items-center justify-between px-6">
+          <div className="flex items-center gap-7">
+            <Link href="/" className="flex items-center gap-2.5">
+              <InkLogo className="h-5 w-auto" />
+              <span className="paper-mono text-[15px] font-medium">emberd</span>
+              <span className="paper-mono rounded-full border bd px-2 py-0.5 text-[11px] t-mute">
+                v0.1
+              </span>
             </Link>
-            <Link href="/docs/roadmap" className="ember-navlink hidden sm:inline">
-              Roadmap
-            </Link>
-            <a
-              href={GITHUB}
-              aria-label="emberd on GitHub"
-              className="ember-navlink inline-flex items-center"
-            >
-              <GithubIcon className="h-[18px] w-[18px]" />
+            <nav className="hidden items-center gap-6 sm:flex">
+              <Link href="/docs" className="paper-navlink">
+                Docs
+              </Link>
+              <Link href="/docs/roadmap" className="paper-navlink">
+                Roadmap
+              </Link>
+              <Link href="/docs/api-reference" className="paper-navlink">
+                API
+              </Link>
+            </nav>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <a href={GITHUB} className="pill-outline hidden sm:inline-flex">
+              GitHub
             </a>
-          </nav>
+            <Link href="/docs/getting-started" className="pill-primary">
+              Get started
+            </Link>
+          </div>
         </div>
       </header>
 
       <main className="flex-1">
-        {/* ── hero ─────────────────────────────────────────────── */}
-        <section className="mx-auto w-full max-w-5xl px-6 pb-24 pt-24 sm:pt-32">
-          <h1
-            className="ember-rise max-w-3xl font-semibold leading-[1.03] tracking-[-0.035em]"
-            style={{ fontSize: 'clamp(2.6rem, 5.4vw, 4rem)', animationDelay: '120ms' }}
-          >
-            Run agent code in a{' '}
-            <span className="t-accent">microVM</span>,
-            <br className="hidden sm:block" /> not a container.
+        {/* ── hero: one stacked column, led by the install command ── */}
+        <section className="mx-auto w-full max-w-4xl px-6 pb-8 pt-20 sm:pt-28">
+          <h1 className="paper-display rise max-w-3xl text-[34px] font-medium leading-[1.08] sm:text-[52px]">
+            Run agent code in a microVM, not a container.
           </h1>
-
           <p
-            className="ember-rise mt-6 max-w-[33rem] text-[1.13rem] leading-[1.6] t-sub sm:mt-7"
-            style={{ animationDelay: '180ms' }}
+            className="rise mt-6 max-w-xl text-base leading-[1.6] t-body sm:text-[17px]"
+            style={{ animationDelay: '80ms' }}
           >
-            A local-first, open-source runtime that runs AI-agent tool calls in
-            isolated Firecracker microVMs — real hardware isolation, not a shared
-            kernel.
+            Every sandbox gets its own kernel behind KVM. Create one, run
+            untrusted code, throw it away — in the time a container takes to
+            think about it.
           </p>
 
-          <div
-            className="ember-rise mt-10 flex flex-wrap items-center gap-3"
-            style={{ animationDelay: '240ms' }}
-          >
-            <Link
-              href="/docs"
-              className="ember-btn rounded-md px-5 py-2.5 text-sm font-medium"
-            >
-              Read the docs
-            </Link>
-            <Link
-              href="/docs/getting-started"
-              className="ember-ghost rounded-md px-5 py-2.5 text-sm font-medium"
-            >
-              Get started
-            </Link>
-            <a
-              href={GITHUB}
-              className="ember-mono ml-1 inline-flex items-center gap-1.5 px-2 py-2.5 text-[0.82rem] t-muted transition-colors hover:text-[var(--ember-fg)]"
-            >
-              View source <ArrowUpRight className="h-4 w-4" strokeWidth={2} aria-hidden />
-            </a>
+          <div className="rise mt-10" style={{ animationDelay: '160ms' }}>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="install-block paper-mono">
+                <span className="prompt" aria-hidden>
+                  $
+                </span>
+                <span className="cmd">{INSTALL_CMD}</span>
+              </div>
+              <CopyButton text={INSTALL_CMD} label="Copy" />
+            </div>
+            <p className="mt-4 text-[13px] t-body">
+              Linux + KVM ·{' '}
+              <Link href="/docs" className="paper-link-mute">
+                read the docs
+              </Link>
+            </p>
           </div>
 
-          {/* ── terminal ───────────────────────────────────────── */}
           <div
-            className="ember-rise ember-term mt-16 overflow-hidden rounded-xl sm:mt-20"
-            style={{ animationDelay: '320ms' }}
+            className="terminal-card rise mt-14 min-w-0"
+            style={{ animationDelay: '240ms' }}
           >
-            <div className="flex items-center gap-2 border-b bd px-4 py-3">
-              <span className="flex gap-1.5" aria-hidden>
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: 'rgba(255,255,255,0.13)' }} />
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: 'rgba(255,255,255,0.13)' }} />
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: 'rgba(255,255,255,0.13)' }} />
+            <div className="flex items-center gap-2 px-1 pt-1" aria-hidden>
+              <span className="flex gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ background: 'var(--tl-red)' }} />
+                <span className="h-3 w-3 rounded-full" style={{ background: 'var(--tl-yellow)' }} />
+                <span className="h-3 w-3 rounded-full" style={{ background: 'var(--tl-green)' }} />
               </span>
-              <span className="ember-mono ml-2 text-[0.74rem] t-muted">
+              <span className="paper-mono ml-2 text-[11px] t-mute">
                 emberd — localhost:7777
               </span>
             </div>
-
-            <div className="ember-mono overflow-x-auto px-5 py-6 text-[0.8rem] leading-[1.7] sm:px-7 sm:text-[0.9rem]">
+            <div className="paper-mono overflow-x-auto px-1 pb-1 pt-5 text-[13px] leading-[1.8] sm:text-[14px]">
               <Line>
-                <Prompt /> curl -X <Method>POST</Method> :7777/sandboxes
+                <Dollar /> curl -X POST :7777/sandboxes
               </Line>
-              <Line muted>
+              <Line mute>
                 {'{ "id": "sb_c1728b82ac4f" }'}
-                <span className="t-faint">  # pops a pre-warmed microVM · &lt;1 ms</span>
+                <Comment>  # &lt;1 ms from the warm pool</Comment>
               </Line>
-
-              <Spacer />
-
+              <Gap />
               <Line>
-                <Prompt /> curl -X <Method>POST</Method> :7777/sandboxes/sb_c17.../exec \
+                <Dollar /> curl -X POST :7777/sandboxes/sb_c17.../exec \
               </Line>
+              <Line>{`     -d '{"code":"print(6*7)"}'`}</Line>
+              <Line mute>{'{ "stdout": "42\\n", "exit_code": 0 }'}</Line>
+              <Gap />
               <Line>
-                {'     -d '}
-                <span className="t-amber">{`'{"code":"print(6*7)"}'`}</span>
+                <Dollar /> curl -X DELETE :7777/sandboxes/sb_c17...
               </Line>
-              <Line muted>
-                {'{ "stdout": "'}
-                <span className="t-accent">42</span>
-                {'\\n", "exit_code": '}
-                <span className="t-accent">0</span>
-                {' }'}
-              </Line>
-
-              <Spacer />
-
-              <Line>
-                <Prompt /> curl -X <Method del>DELETE</Method> :7777/sandboxes/sb_c17...
-              </Line>
-              <Line muted>
+              <Line mute>
                 204 No Content
-                <span className="t-faint">  # VM gone, overlay discarded</span>
-              </Line>
-
-              <Line>
-                <Prompt />
-                <span className="ember-caret" aria-hidden />
+                <Comment>  # VM gone, overlay discarded</Comment>
               </Line>
             </div>
           </div>
         </section>
 
-        {/* ── stats ────────────────────────────────────────────── */}
-        <section className="mx-auto w-full max-w-5xl px-6">
-          <h2 className="ember-mono mb-6 text-[0.72rem] uppercase tracking-[0.2em] t-muted">
-            <span className="t-accent">/</span> Measured on the reference host
-          </h2>
-          <dl className="grid grid-cols-2 border-l border-t bd sm:grid-cols-4">
-            {stats.map((s) => (
-              <div key={s.label} className="border-b border-r bd px-5 py-8 sm:px-6">
-                <dt className="tnum text-[1.9rem] font-semibold leading-none tracking-[-0.02em] sm:text-[2.15rem]">
+        {/* ── the numbers: no band, no rules — air does the framing ── */}
+        <section className="mx-auto w-full max-w-4xl px-6 pt-24 sm:pt-32">
+          <dl className="grid grid-cols-2 gap-x-10 gap-y-14 sm:grid-cols-4">
+            {specs.map((s) => (
+              <div key={s.label} className="flex flex-col gap-3">
+                <dt className="paper-mono tnum text-[34px] font-medium leading-none sm:text-[44px]">
                   {s.value}
                 </dt>
-                <dd className="ember-mono mt-3 text-[0.7rem] uppercase tracking-[0.14em] t-muted">
+                <dd className="paper-mono text-[11px] uppercase leading-[1.5] tracking-[0.12em] t-mute">
                   {s.label}
                 </dd>
               </div>
@@ -192,40 +157,145 @@ export default function HomePage() {
           </dl>
         </section>
 
-        {/* ── features ─────────────────────────────────────────── */}
-        <section className="mx-auto w-full max-w-5xl px-6 pt-28">
-          <h2 className="ember-mono mb-8 text-[0.72rem] uppercase tracking-[0.2em] t-muted">
-            <span className="t-accent">/</span> Why a microVM
-          </h2>
-          <div className="grid border-l border-t bd md:grid-cols-3">
-            {features.map((f) => (
-              <article key={f.n} className="ember-cell border-b border-r bd p-8">
-                <div className="ember-mono mb-6 text-[0.85rem] t-accent">{f.n}</div>
-                <h3 className="text-[1.15rem] font-semibold tracking-tight">{f.title}</h3>
-                <p className="mt-3.5 text-[0.95rem] leading-[1.65] t-muted">
-                  {f.body}
-                </p>
-              </article>
+        {/* ── 01 / lifecycle — a horizontal rail, read left to right ─ */}
+        <section className="mx-auto w-full max-w-4xl px-6 pt-28">
+          <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+            <div>
+              <p className="spec-marker">
+                <span className="idx">01</span>
+                <span className="lbl">Lifecycle</span>
+              </p>
+              <h2 className="paper-display mt-5 text-[26px] font-medium leading-[1.2] sm:text-[32px]">
+                Create. Exec. Destroy.
+              </h2>
+            </div>
+            <Link href="/docs/api-reference" className="paper-link-mute text-sm">
+              Read the API reference →
+            </Link>
+          </div>
+          <p className="mt-5 max-w-xl text-base leading-[1.6] t-body">
+            The whole API is three endpoints on one daemon. No fleet
+            orchestrator, no YAML, no scheduler — a sandbox is something you
+            make, use, and delete.
+          </p>
+
+          <ol className="mt-14 grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-3">
+            {endpoints.map((e) => (
+              <li key={e.chip} className="rail-step pr-4">
+                <span className="endpoint-chip w-fit">{e.chip}</span>
+                <p className="mt-3 text-sm leading-[1.5] t-body">{e.text}</p>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {/* ── 02 / speed — the page's one inverted surface, full width ─ */}
+        <section className="mx-auto w-full max-w-4xl px-6 pt-28">
+          <div className="paper-card-dark p-8 sm:p-12">
+            <p className="spec-marker">
+              <span className="idx">02</span>
+              <span className="lbl" style={{ color: 'var(--on-dark-mute)' }}>
+                Speed
+              </span>
+            </p>
+            <h2 className="paper-display mt-5 max-w-lg text-[26px] font-medium leading-[1.2] sm:text-[32px]">
+              Fast enough for a tool-call loop.
+            </h2>
+            <p
+              className="mt-5 max-w-lg text-base leading-[1.6]"
+              style={{ color: 'var(--on-dark-mute)' }}
+            >
+              Hardware isolation used to mean waiting for a VM. A warm pool and
+              snapshot restore make microVMs cheap enough to hand one to every
+              tool call.
+            </p>
+
+            <div className="mt-12 grid grid-cols-2 gap-8 sm:max-w-md">
+              <div className="flex flex-col gap-2.5">
+                <span className="paper-mono tnum text-[38px] font-medium leading-none sm:text-[46px]">
+                  &lt;1 ms
+                </span>
+                <span
+                  className="paper-mono text-[11px] uppercase tracking-[0.12em]"
+                  style={{ color: 'var(--on-dark-mute)' }}
+                >
+                  create, warm pool
+                </span>
+              </div>
+              <div className="flex flex-col gap-2.5">
+                <span className="paper-mono tnum text-[38px] font-medium leading-none sm:text-[46px]">
+                  43 ms
+                </span>
+                <span
+                  className="paper-mono text-[11px] uppercase tracking-[0.12em]"
+                  style={{ color: 'var(--on-dark-mute)' }}
+                >
+                  full round trip
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-12 flex flex-wrap items-end justify-between gap-8">
+              <ul className="flex flex-col gap-2.5">
+                <li className="paper-check-on-dark">Warm sandboxes handed out before the boot you never see</li>
+                <li className="paper-check-on-dark">create blocks on a vsock readiness probe — first exec always works</li>
+                <li className="paper-check-on-dark">Measured on the reference host, not estimated</li>
+              </ul>
+              <Link href="/docs/performance" className="pill-on-dark whitespace-nowrap">
+                See the numbers
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* ── 03 / local-first — one statement, three vertical-ruled claims ─ */}
+        <section className="mx-auto w-full max-w-4xl px-6 pt-28">
+          <p className="spec-marker">
+            <span className="idx">03</span>
+            <span className="lbl">Local-first</span>
+          </p>
+          <div className="mt-5 flex items-start justify-between gap-8">
+            <h2 className="paper-display max-w-xl text-[28px] font-medium leading-[1.15] sm:text-[38px]">
+              Your code stays on your machine.
+            </h2>
+            <LockIcon className="hidden h-16 w-16 flex-none sm:block" />
+          </div>
+
+          <div className="mt-14 grid grid-cols-1 gap-x-8 gap-y-8 sm:grid-cols-3">
+            {[
+              ['One daemon, one binary', 'Runs on your hardware. Nothing to sign up for.'],
+              ['No cloud dependency', 'No account, no telemetry, no phone-home.'],
+              ['No network by default', 'Sandboxes get no network device unless you add one.'],
+            ].map(([title, body]) => (
+              <div key={title} className="border-l bd pl-5">
+                <p className="paper-mono text-[13px] font-medium">{title}</p>
+                <p className="mt-2.5 text-sm leading-[1.5] t-body">{body}</p>
+              </div>
             ))}
           </div>
         </section>
 
-        {/* ── closing CTA ──────────────────────────────────────── */}
-        <section className="mx-auto w-full max-w-5xl px-6 pb-28 pt-28">
-          <div className="border-t bd pt-24 text-center">
-            <h2 className="mx-auto max-w-xl text-[2rem] font-semibold tracking-[-0.025em] sm:text-[2.6rem]">
-              Boot your first sandbox.
-            </h2>
-            <p className="ember-mono mx-auto mt-5 max-w-md text-[0.85rem] t-muted">
-              Three endpoints. One daemon. Runs on your machine.
-            </p>
-            <div className="mt-9 flex items-center justify-center">
-              <Link
-                href="/docs/getting-started"
-                className="ember-btn inline-flex items-center gap-2 rounded-md px-5 py-2.5 text-sm font-medium"
-              >
-                Read the getting-started guide
-                <ArrowRight className="h-4 w-4" strokeWidth={2} aria-hidden />
+        {/* ── closing ──────────────────────────────────────────── */}
+        <section className="mx-auto w-full max-w-4xl px-6 pb-24 pt-28">
+          <div className="border-t bd pt-16 sm:flex sm:items-end sm:justify-between">
+            <div>
+              <p className="spec-marker">
+                <span className="idx">→</span>
+                <span className="lbl">Getting started</span>
+              </p>
+              <h2 className="paper-display mt-5 text-[28px] font-medium leading-[1.15] sm:text-4xl">
+                Boot your first sandbox.
+              </h2>
+              <p className="paper-mono mt-4 text-[13px] t-body">
+                three endpoints · one daemon · runs on your machine
+              </p>
+            </div>
+            <div className="mt-8 flex items-center gap-3 sm:mt-0">
+              <a href={GITHUB} className="pill-outline">
+                View source
+              </a>
+              <Link href="/docs/getting-started" className="pill-primary">
+                Get started
               </Link>
             </div>
           </div>
@@ -233,22 +303,17 @@ export default function HomePage() {
       </main>
 
       {/* ── footer ─────────────────────────────────────────────── */}
-      <footer className="border-t bd">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-10 sm:flex-row sm:items-center sm:justify-between">
+      <footer>
+        <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-between gap-4 px-6 py-8">
           <div className="flex items-center gap-2.5">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.svg" alt="" width={23} height={20} className="h-5 w-auto" />
-            <span className="ember-mono text-sm">emberd</span>
-            <span className="t-faint">·</span>
-            <span className="text-sm t-muted">
-              Firecracker microVM sandboxing runtime
-            </span>
+            <InkLogo className="h-4 w-auto" />
+            <span className="text-xs t-body">© 2026 emberd</span>
           </div>
-          <nav className="ember-mono flex flex-wrap items-center gap-5 text-[0.8rem]">
-            <Link href="/docs" className="ember-navlink">Docs</Link>
-            <Link href="/docs/roadmap" className="ember-navlink">Roadmap</Link>
-            <Link href="/docs/design-notes" className="ember-navlink">Design notes</Link>
-            <a href={GITHUB} className="ember-navlink">GitHub</a>
+          <nav className="flex flex-wrap items-center gap-5">
+            <Link href="/docs" className="paper-footlink">Docs</Link>
+            <Link href="/docs/roadmap" className="paper-footlink">Roadmap</Link>
+            <Link href="/docs/design-notes" className="paper-footlink">Design notes</Link>
+            <a href={GITHUB} className="paper-footlink">GitHub</a>
           </nav>
         </div>
       </footer>
@@ -256,52 +321,63 @@ export default function HomePage() {
   );
 }
 
-/* ── small presentational helpers for the terminal ───────────────── */
+/* ── terminal helpers ───────────────────────────────────────────── */
 
-function Line({
-  children,
-  muted = false,
-}: {
-  children: ReactNode;
-  muted?: boolean;
-}) {
+function Line({ children, mute = false }: { children: ReactNode; mute?: boolean }) {
   return (
-    <div className={muted ? 't-muted' : 't-fg'} style={{ whiteSpace: 'pre' }}>
+    <div className={mute ? 't-mute' : 't-ink'} style={{ whiteSpace: 'pre' }}>
       {children}
     </div>
   );
 }
 
-function Prompt() {
-  return <span className="t-accent">$</span>;
+function Dollar() {
+  return <span className="t-ember">$</span>;
 }
 
-function Method({
-  children,
-  del = false,
-}: {
-  children: ReactNode;
-  del?: boolean;
-}) {
-  return (
-    <span className="font-medium" style={{ color: del ? 'var(--ember-amber)' : 'var(--ember-accent)' }}>
-      {children}
-    </span>
-  );
+function Comment({ children }: { children: ReactNode }) {
+  return <span className="t-mute">{children}</span>;
 }
 
-function Spacer() {
+function Gap() {
   return <div aria-hidden style={{ height: '0.9em' }} />;
 }
 
-function GithubIcon({ className }: { className?: string }) {
+/* ── marks ──────────────────────────────────────────────────────── */
+
+/** The emberd mark re-inked for the white canvas: ink bars over the
+ *  ember-gradient base stripe. public/logo.svg keeps the dark-theme fills. */
+function InkLogo({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden className={className}>
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M8 0C3.58 0 0 3.58 0 8C0 11.54 2.29 14.53 5.47 15.59C5.87 15.66 6.02 15.42 6.02 15.21C6.02 15.02 6.01 14.39 6.01 13.72C4 14.09 3.48 13.23 3.32 12.78C3.23 12.55 2.84 11.84 2.5 11.65C2.22 11.5 1.82 11.13 2.49 11.12C3.12 11.11 3.57 11.7 3.72 11.94C4.44 13.15 5.59 12.81 6.05 12.6C6.12 12.08 6.33 11.73 6.56 11.53C4.78 11.33 2.92 10.64 2.92 7.58C2.92 6.71 3.23 5.99 3.74 5.43C3.66 5.23 3.38 4.41 3.82 3.31C3.82 3.31 4.49 3.1 6.02 4.13C6.66 3.95 7.34 3.86 8.02 3.86C8.7 3.86 9.38 3.95 10.02 4.13C11.55 3.09 12.22 3.31 12.22 3.31C12.66 4.41 12.38 5.23 12.3 5.43C12.81 5.99 13.12 6.7 13.12 7.58C13.12 10.65 11.25 11.33 9.47 11.53C9.76 11.78 10.01 12.26 10.01 13.01C10.01 14.08 10 14.94 10 15.21C10 15.42 10.15 15.67 10.55 15.59C13.71 14.53 16 11.53 16 8C16 3.58 12.42 0 8 0Z"
-      />
+    <svg viewBox="0 0 134 117" fill="none" className={className} aria-hidden>
+      <defs>
+        <linearGradient id="ember-ink" x1="66.6" y1="83" x2="66.6" y2="117" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#ff8a4d" />
+          <stop offset="1" stopColor="#df461d" />
+        </linearGradient>
+      </defs>
+      <path d="M0 16.9997L66.672 0.333008L133.333 16.9997V33.6663L66.672 50.333L0 33.6663V16.9997Z" fill="currentColor" />
+      <path d="M0 50.333L66.672 66.9997L133.333 50.333V66.9997L66.672 83.6663L0 66.9997V50.333Z" fill="currentColor" />
+      <path d="M0 83.6663L66.672 100.333L133.333 83.6663V100.333L66.672 117L0 100.333V83.6663Z" fill="url(#ember-ink)" />
+    </svg>
+  );
+}
+
+/** Stroke-only lock, drawn light — the quiet ornament of the privacy section. */
+function LockIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--hairline-strong)"
+      strokeWidth="1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <rect x="4" y="10.5" width="16" height="10.5" rx="2.5" />
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
     </svg>
   );
 }
